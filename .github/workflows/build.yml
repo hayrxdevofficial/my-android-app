@@ -16,7 +16,7 @@ jobs:
 
         cp ContentView.swift CosmicSungarov/ContentView.swift
         cp MyApp.swift CosmicSungarov/MyApp.swift
-        cp MultiplayerManager.swift CosmicSungarov/MultiplayerManager.swift
+        cp NetworkManager.swift CosmicSungarov/NetworkManager.swift
 
         # Скачиваем иконку
         mkdir -p CosmicSungarov/Assets.xcassets/AppIcon.appiconset
@@ -89,13 +89,11 @@ jobs:
                 <string>UIInterfaceOrientationLandscapeLeft</string>
                 <string>UIInterfaceOrientationLandscapeRight</string>
             </array>
-            <key>NSLocalNetworkUsageDescription</key>
-            <string>Cosmic Sungarov использует локальную сеть для игры с друзьями</string>
-            <key>NSBonjourServices</key>
-            <array>
-                <string>_cosmic-sngrv._tcp</string>
-                <string>_cosmic-sngrv._udp</string>
-            </array>
+            <key>NSAppTransportSecurity</key>
+            <dict>
+                <key>NSAllowsLocalNetworking</key>
+                <true/>
+            </dict>
         </dict>
         </plist>
         EOF
@@ -124,7 +122,7 @@ jobs:
             sources:
               - MyApp.swift
               - ContentView.swift
-              - MultiplayerManager.swift
+              - NetworkManager.swift
               - path: Assets.xcassets
             info:
               path: Info.plist
