@@ -1,31 +1,137 @@
-name: Build Android APK
+name: Build Cosmic Sungarov
 on:
   workflow_dispatch:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: macos-latest
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+    - name: Checkout Code
+      uses: actions/checkout@v4
 
-      - name: Setup Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'temurin'
-          java-version: '17'
+    - name: Prepare project structure
+      run: |
+        mkdir -p CosmicSungarov
+        cp ContentView.swift CosmicSungarov/ContentView.swift
+        cp MyApp.swift CosmicSungarov/MyApp.swift
 
-      - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v3
-        with:
-          gradle-version: '8.7'
+        cat << 'EOF' > CosmicSungarov/Info.plist
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        <plist version="1.0">
+        <dict>
+            <key>CFBundleDevelopmentRegion</key>
+            <string>en</string>
+            <key>CFBundleExecutable</key>
+            <string>CosmicSungarov</string>
+            <key>CFBundleIdentifier</key>
+            <string>com.hayrx.cosmicsungarov</string>
+            <key>CFBundleInfoDictionaryVersion</key>
+            <string>6.0</string>
+            <key>CFBundleName</key>
+            <string>Cosmic Sungarov</string>
+            <key>CFBundleDisplayName</key>
+            <string>Cosmic Sungarov</string>
+            <key>CFBundlePackageType</key>
+            <string>APPL</string>
+            <key>CFBundleShortVersionString</key>
+            <string>1.0</string>
+            <key>CFBundleVersion</key>
+            <string>1</string>
+            <key>LSRequiresIPhoneOS</key>
+            <true/>
+            <key>MinimumOSVersion</key>
+            <string>16.0</string>
+            <key>UILaunchScreen</key>
+            <dict/>
+            <key>UIRequiresFullScreen</key>
+            <true/>
+            <key>UIStatusBarHidden</key>
+            <true/>
+            <key>UIViewControllerBasedStatusBarAppearance</key>
+            <false/>
+            <key>UISupportedInterfaceOrientations</key>
+            <array>
+                <string>UIInterfaceOrientationLandscapeLeft</string>
+                <string>UIInterfaceOrientationLandscapeRight</string>
+            </array>
+        </dict>
+        </plist>
+        EOF
 
-      - name: Build Release APK
-        run: gradle assembleRelease
+    - name: Install XcodeGen
+      run: brew install xcodegen
 
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: HClick-APK
-          path: app/build/outputs/apk/release/*.apk
+    - name: Generate Xcode project
+      run: |
+        cd CosmicSungarov
+        cat << 'EOF' > project.yml
+        name: CosmicSungarov
+        options:
+          bundleIdPrefix: com.hayrx
+          deploymentTarget:
+            iOS: "16.0"
+        settings:
+          base:
+            SWIFT_VERSION: "5.0"
+            IPHONEOS_DEPLOYMENT_TARGET: "16.0"
+        targets:
+          CosmicSungarov:
+            type: application
+            platform: iOS
+            deploymentTarget: "16.0"
+            sources:
+              - MyApp.swift
+              - ContentView.swift
+            info:
+              path: Info.plist
+            settings:
+              base:
+                PRODUCT_BUNDLE_IDENTIFIER: com.hayrx.cosmicsungarov
+                PRODUCT_NAME: CosmicSungarov
+                MARKETING_VERSION: "1.0"
+                CURRENT_PROJECT_VERSION: "1"
+                TARGETED_DEVICE_FAMILY: "1"
+                GENERATE_INFOPLIST_FILE: NO
+                CODE_SIGNING_ALLOWED: NO
+                CODE_SIGNING_REQUIRED: NO
+                CODE_SIGN_IDENTITY: ""
+        EOF
+        xcodegen generate
+
+    - name: Build archive (unsigned)
+      run: |
+        cd CosmicSungarov
+        xcodebuild archive \
+          -project CosmicSungarov.xcodeproj \
+          -scheme CosmicSungarov \
+          -configuration Release \
+          -sdk iphoneos \
+          -destination "generic/platform=iOS" \
+          -archivePath ./build/CosmicSungarov.xcarchive \
+          CODE_SIGNING_ALLOWED=NO \
+          CODE_SIGNING_REQUIRED=NO \
+          CODE_SIGN_IDENTITY="" \
+          DEVELOPMENT_TEAM="" \
+          PROVISIONING_PROFILE_SPECIFIER="" \
+          IPHONEOS_DEPLOYMENT_TARGET=16.0
+
+    - name: Package into IPA
+      run: |
+        mkdir -p Payload
+        APP_PATH=$(find CosmicSungarov/build/CosmicSungarov.xcarchive/Products/Applications -name "CosmicSungarov.app" -type d | head -n 1)
+        if [ -z "$APP_PATH" ]; then
+          echo "❌ .app not found!"
+          find CosmicSungarov/build -name "*.app" -type d
+          exit 1
+        fi
+        echo "✅ Found: $APP_PATH"
+        cp -r "$APP_PATH" Payload/
+        zip -r CosmicSungarov.ipa Payload
+
+    - name: Upload IPA
+      uses: actions/upload-artifact@v4
+      with:
+        name: CosmicSungarov
+        path: CosmicSungarov.ipa
