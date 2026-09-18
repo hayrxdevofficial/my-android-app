@@ -135,7 +135,6 @@ struct ContentView: View {
             if newValue != nil { showInviteAlert = true }
         }
         .onChange(of: network.gameStarted) { started in
-            // Хост тоже переходит в игру, когда гость принял приглашение
             if started && (screen == .friends || screen == .menu) {
                 multiplayerGame = true
                 withAnimation(.easeInOut(duration: 0.3)) { screen = .game }
@@ -445,6 +444,7 @@ struct GameView: View {
     @State private var heroY: CGFloat = 0
     @State private var heroTargetY: CGFloat = 0
     @State private var remoteHeroY: CGFloat = 0
+    @State private var remoteHeroYTarget: CGFloat = 0
     @State private var bullets: [Bullet] = []
     @State private var enemies: [Enemy] = []
     @State private var score = 0
@@ -458,9 +458,10 @@ struct GameView: View {
     private let enemySizeRatio: CGFloat = 0.11
     private let bulletSizeRatio: CGFloat = 0.045
     private let bulletSpeedRatio: CGFloat = 1.10
-    private let baseEnemySpeed: CGFloat = 0.30
-    private let baseSpawnInterval: Double = 1.4
-    private let minSpawnInterval: Double = 1.0
+    // +4% сложности
+    private let baseEnemySpeed: CGFloat = 0.312
+    private let baseSpawnInterval: Double = 1.35
+    private let minSpawnInterval: Double = 0.96
     private let fireInterval: Double = 0.28
 
     let timer = Timer.publish(every: 1.0 / 60.0, on: .main, in: .common).autoconnect()
@@ -468,8 +469,9 @@ struct GameView: View {
     var isMultiplayer: Bool { network != nil }
     var isHost: Bool { network?.isHost ?? false }
 
-    var enemySpeedMultiplier: CGFloat { 1.0 + min(CGFloat(score) * 0.008, 0.5) }
-    var currentSpawnInterval: Double { max(minSpawnInterval, baseSpawnInterval - Double(score) * 0.005) }
+    // +4% сложности в динамике
+    var enemySpeedMultiplier: CGFloat { 1.0 + min(CGFloat(score) * 0.00832, 0.52) }
+    var currentSpawnInterval: Double { max(minSpawnInterval, baseSpawnInterval - Double(score) * 0.0052) }
 
     var body: some View {
         GeometryReader { geo in
@@ -596,6 +598,7 @@ struct GameView: View {
                 heroY = h * 0.5
                 heroTargetY = h * 0.5
                 remoteHeroY = h * 0.5
+                remoteHeroYTarget = h * 0.5
             }
             .onReceive(timer) { _ in
                 if !isGameOver {
@@ -621,15 +624,19 @@ struct GameView: View {
 
         // ==== ГОСТЬ ====
         if isMultiplayer && !isHost {
-            // Отправляем свою Y хосту (30 раз/сек)
+            // Отправляем свою Y хосту (40 раз/сек)
             netSendTimer += 1.0 / 60.0
-            if netSendTimer >= 0.033 {
+            if netSendTimer >= 0.025 {
                 netSendTimer = 0
                 network?.sendClientY(heroY)
             }
+
+            // Плавная интерполяция партнёра — вместо мгновенного прыжка
+            remoteHeroYTarget = network?.remoteHeroY ?? remoteHeroY
+            remoteHeroY += (remoteHeroYTarget - remoteHeroY) * 0.35
+
             // Применяем состояние от хоста
             if let net = network {
-                remoteHeroY = net.remoteHeroY
                 score = net.remoteScore
                 earnedCoins = net.remoteCoins
                 enemies = net.remoteEnemies.compactMap { dict in
@@ -651,6 +658,12 @@ struct GameView: View {
         }
 
         // ==== ХОСТ или ОДИНОЧНАЯ ====
+        // Плавная интерполяция партнёра и у хоста
+        if isMultiplayer {
+            remoteHeroYTarget = network?.remoteHeroY ?? remoteHeroY
+            remoteHeroY += (remoteHeroYTarget - remoteHeroY) * 0.35
+        }
+
         fireTimer += 1.0 / 60.0
         if fireTimer >= fireInterval {
             fireTimer = 0
@@ -717,10 +730,10 @@ struct GameView: View {
             }
         }
 
-        // Хост отправляет состояние гостю (15 раз/сек)
+        // Хост отправляет состояние гостю (20 раз/сек)
         if isMultiplayer && isHost {
             netSendTimer += 1.0 / 60.0
-            if netSendTimer >= 0.066 {
+            if netSendTimer >= 0.050 {
                 netSendTimer = 0
                 let enemiesJSON = enemies.map { ["x": Double($0.x), "y": Double($0.y), "size": Double($0.size)] }
                 let bulletsJSON = bullets.map { ["x": Double($0.x), "y": Double($0.y)] }
