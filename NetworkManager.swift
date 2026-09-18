@@ -1,35 +1,42 @@
 import Foundation
 import UIKit
 
+// Информация об игроке для UI
+struct PlayerInfo: Identifiable, Equatable {
+    let id: String      // UUID, выданный сервером
+    let name: String    // Имя, которое прислал игрок
+}
+
 class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate {
     private var webSocketTask: URLSessionWebSocketTask?
     private var session: URLSession!
 
     @Published var isConnected = false
-    @Published var onlinePlayers: [String] = []
-    @Published var incomingInvite: String? = nil
+    @Published var onlinePlayers: [PlayerInfo] = []
+    @Published var incomingInvite: PlayerInfo? = nil
     @Published var inviteAccepted: Bool? = nil
     @Published var connectionError: String? = nil
 
-    // ← ЗДЕСЬ IP ТВОЕГО ПК
     let serverIP = "192.168.31.95"
     let serverPort = 8765
 
-    private var myPlayerID: String
+    // ID выдаёт сервер — здесь просто храним после welcome
+    private var myPlayerID: String = ""
+    // Имя берём с устройства — его отправим серверу
+    private let myDisplayName: String
 
     override init() {
-        // Имя игрока — из настроек устройства, но можно захардкодить для теста
-        let deviceName = UIDevice.current.name
-        // Ограничиваем 20 символами и убираем спецсимволы
-        self.myPlayerID = deviceName
-            .replacingOccurrences(of: "'", with: "")
-            .prefix(20)
+        var name = UIDevice.current.name
+            .replacingOccurrences(of: "#", with: "")
             .trimmingCharacters(in: .whitespaces)
-        if myPlayerID.isEmpty { myPlayerID = "Player" }
+        if name.isEmpty { name = "Player" }
+        if name.count > 20 { name = String(name.prefix(20)) }
+        self.myDisplayName = name
 
         super.init()
         let config = URLSessionConfiguration.default
         session = URLSession(configuration: config, delegate: self, delegateQueue: OperationQueue.main)
+        print("🎮 Имя устройства: \(myDisplayName)")
     }
 
     func connect() {
@@ -43,23 +50,28 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate {
         connectionError = nil
         webSocketTask = session.webSocketTask(with: url)
         webSocketTask?.resume()
-        registerPlayer()
         receiveMessage()
+        // НЕ отправляем register тут — ждём welcome от сервера
     }
 
     func disconnect() {
         webSocketTask?.cancel(with: .normalClosure, reason: nil)
         webSocketTask = nil
         isConnected = false
+        onlinePlayers = []
+        myPlayerID = ""
     }
 
-    // Периодически обновляем список игроков
     func refreshPlayerList() {
         sendJSON(["type": "get_players"])
     }
 
-    private func registerPlayer() {
-        sendJSON(["type": "register", "player_id": myPlayerID])
+    // Отправляем имя после получения welcome
+    private func sendName() {
+        sendJSON([
+            "type": "set_name",
+            "name": myDisplayName
+        ])
     }
 
     func sendInvite(to targetID: String) {
@@ -67,7 +79,11 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate {
     }
 
     func respondToInvite(from targetID: String, accepted: Bool) {
-        sendJSON(["type": "invite_response", "target_id": targetID, "accepted": accepted])
+        sendJSON([
+            "type": "invite_response",
+            "target_id": targetID,
+            "accepted": accepted
+        ])
     }
 
     func sendGameData(to targetID: String, payload: [String: Any]) {
@@ -96,7 +112,7 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate {
                     if self?.connectionError == nil {
                         self?.connectionError = "Сервер недоступен"
                     }
-                    print("❌ WebSocket error: \(error.localizedDescription)")
+                    print("❌ WS error: \(error.localizedDescription)")
                 }
             case .success(let message):
                 switch message {
@@ -119,24 +135,41 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate {
 
         DispatchQueue.main.async {
             switch type {
+
+            case "welcome":
+                // Сервер выдал нам уникальный ID
+                if let id = json["your_id"] as? String {
+                    self.myPlayerID = id
+                    print("🎁 Получен ID от сервера: \(id)")
+                    // Теперь отправляем имя — сервер нас зарегистрирует
+                    self.sendName()
+                }
+
             case "player_list":
                 if let players = json["players"] as? [[String: Any]] {
-                    let ids = players.compactMap { $0["id"] as? String }
-                    self.onlinePlayers = ids.filter { $0 != self.myPlayerID }
-                    print("👥 Онлайн: \(self.onlinePlayers)")
+                    var infos: [PlayerInfo] = []
+                    for p in players {
+                        guard let id = p["id"] as? String,
+                              let name = p["name"] as? String else { continue }
+                        infos.append(PlayerInfo(id: id, name: name))
+                    }
+                    self.onlinePlayers = infos
+                    print("👥 Онлайн: \(infos.map { "\($0.name)(\($0.id))" })")
                 }
+
             case "invite_received":
-                if let fromID = json["from_id"] as? String {
-                    self.incomingInvite = fromID
-                    print("📨 Приглашение от \(fromID)")
+                if let fromID = json["from_id"] as? String,
+                   let fromName = json["from_name"] as? String {
+                    self.incomingInvite = PlayerInfo(id: fromID, name: fromName)
+                    print("📨 Приглашение от \(fromName) (\(fromID))")
                 }
+
             case "invite_answer":
                 if let accepted = json["accepted"] as? Bool {
                     self.inviteAccepted = accepted
                     print("📬 Ответ: \(accepted ? "принято" : "отклонено")")
                 }
-            case "game_data":
-                break
+
             default: break
             }
         }
@@ -147,7 +180,7 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate {
         DispatchQueue.main.async {
             self.isConnected = true
             self.connectionError = nil
-            print("✅ WebSocket подключен")
+            print("✅ WebSocket подключен, ждём welcome...")
         }
     }
 
