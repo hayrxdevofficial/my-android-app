@@ -17,11 +17,25 @@ jobs:
         cp ContentView.swift CosmicSungarov/ContentView.swift
         cp MyApp.swift CosmicSungarov/MyApp.swift
         cp NetworkManager.swift CosmicSungarov/NetworkManager.swift
+        cp MusicManager.swift CosmicSungarov/MusicManager.swift
 
-        # Скачиваем иконку
+        # ====== Скачиваем все ассеты в бандл ======
+        ASSETS_BASE="https://raw.githubusercontent.com/hayrxdevofficial/my-android-app/main"
+
+        # Иконка приложения
         mkdir -p CosmicSungarov/Assets.xcassets/AppIcon.appiconset
-        curl -L "https://raw.githubusercontent.com/hayrxdevofficial/my-android-app/main/icon.png" -o CosmicSungarov/Assets.xcassets/AppIcon.appiconset/icon.png
+        curl -L "$ASSETS_BASE/icon.png" -o CosmicSungarov/Assets.xcassets/AppIcon.appiconset/icon.png
 
+        # Игровые картинки — в корень бандла (не в Assets.xcassets)
+        curl -L "$ASSETS_BASE/sungarov.png" -o CosmicSungarov/sungarov.png
+        curl -L "$ASSETS_BASE/bad.png"      -o CosmicSungarov/bad.png
+        curl -L "$ASSETS_BASE/pula.png"     -o CosmicSungarov/pula.png
+
+        # Музыка
+        curl -L "$ASSETS_BASE/menu_music.mp3" -o CosmicSungarov/menu_music.mp3
+        curl -L "$ASSETS_BASE/game_music.mp3" -o CosmicSungarov/game_music.mp3
+
+        # Contents.json для иконки
         cat << 'EOF' > CosmicSungarov/Assets.xcassets/Contents.json
         {
           "info" : { "author" : "xcode", "version" : 1 }
@@ -42,6 +56,7 @@ jobs:
         }
         EOF
 
+        # Info.plist
         cat << 'EOF' > CosmicSungarov/Info.plist
         <?xml version="1.0" encoding="UTF-8"?>
         <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -123,7 +138,18 @@ jobs:
               - MyApp.swift
               - ContentView.swift
               - NetworkManager.swift
+              - MusicManager.swift
               - path: Assets.xcassets
+              - path: sungarov.png
+                buildPhase: resources
+              - path: bad.png
+                buildPhase: resources
+              - path: pula.png
+                buildPhase: resources
+              - path: menu_music.mp3
+                buildPhase: resources
+              - path: game_music.mp3
+                buildPhase: resources
             info:
               path: Info.plist
             settings:
