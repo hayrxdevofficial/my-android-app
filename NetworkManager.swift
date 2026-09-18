@@ -1,10 +1,9 @@
 import Foundation
 import UIKit
 
-// Информация об игроке для UI
 struct PlayerInfo: Identifiable, Equatable {
-    let id: String      // UUID, выданный сервером
-    let name: String    // Имя, которое прислал игрок
+    let id: String
+    let name: String
 }
 
 class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate {
@@ -14,16 +13,27 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate {
     @Published var isConnected = false
     @Published var onlinePlayers: [PlayerInfo] = []
     @Published var incomingInvite: PlayerInfo? = nil
-    @Published var inviteAccepted: Bool? = nil
     @Published var connectionError: String? = nil
+
+    // Мультиплеер
+    @Published var gameStarted = false
+    @Published var peerID: String? = nil
+    @Published var isHost: Bool = false
+
+    // Данные от партнёра
+    @Published var remoteHeroY: CGFloat = 0
+    @Published var remoteEnemies: [[String: Any]] = []
+    @Published var remoteBullets: [[String: Any]] = []
+    @Published var remoteScore: Int = 0
+    @Published var remoteCoins: Int = 0
+    @Published var remoteGameOver = false
 
     let serverIP = "192.168.31.95"
     let serverPort = 8765
 
-    // ID выдаёт сервер — здесь просто храним после welcome
     private var myPlayerID: String = ""
-    // Имя берём с устройства — его отправим серверу
     private let myDisplayName: String
+    private var pendingPeerID: String? = nil
 
     override init() {
         var name = UIDevice.current.name
@@ -36,7 +46,6 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate {
         super.init()
         let config = URLSessionConfiguration.default
         session = URLSession(configuration: config, delegate: self, delegateQueue: OperationQueue.main)
-        print("🎮 Имя устройства: \(myDisplayName)")
     }
 
     func connect() {
@@ -45,13 +54,11 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate {
             connectionError = "Неверный адрес сервера"
             return
         }
-
-        print("🔌 Подключение к \(urlString)...")
         connectionError = nil
+        resetGameState()
         webSocketTask = session.webSocketTask(with: url)
         webSocketTask?.resume()
         receiveMessage()
-        // НЕ отправляем register тут — ждём welcome от сервера
     }
 
     func disconnect() {
@@ -60,40 +67,65 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate {
         isConnected = false
         onlinePlayers = []
         myPlayerID = ""
+        resetGameState()
     }
 
-    func refreshPlayerList() {
-        sendJSON(["type": "get_players"])
+    private func resetGameState() {
+        gameStarted = false
+        peerID = nil
+        isHost = false
+        pendingPeerID = nil
+        remoteHeroY = 0
+        remoteEnemies = []
+        remoteBullets = []
+        remoteScore = 0
+        remoteCoins = 0
+        remoteGameOver = false
     }
 
-    // Отправляем имя после получения welcome
-    private func sendName() {
-        sendJSON([
-            "type": "set_name",
-            "name": myDisplayName
-        ])
-    }
+    func refreshPlayerList() { sendJSON(["type": "get_players"]) }
+    private func sendName() { sendJSON(["type": "set_name", "name": myDisplayName]) }
 
     func sendInvite(to targetID: String) {
+        pendingPeerID = targetID
         sendJSON(["type": "invite", "target_id": targetID])
     }
 
     func respondToInvite(from targetID: String, accepted: Bool) {
-        sendJSON([
-            "type": "invite_response",
-            "target_id": targetID,
-            "accepted": accepted
-        ])
+        if accepted {
+            peerID = targetID
+            isHost = false
+            gameStarted = true
+        }
+        sendJSON(["type": "invite_response", "target_id": targetID, "accepted": accepted])
     }
 
-    func sendGameData(to targetID: String, payload: [String: Any]) {
-        sendJSON(["type": "game_data", "target_id": targetID, "payload": payload])
+    // Хост шлёт состояние гостю
+    func sendGameState(enemies: [[String: Any]], bullets: [[String: Any]],
+                       hostY: CGFloat, score: Int, coins: Int, gameOver: Bool) {
+        guard let peer = peerID else { return }
+        let payload: [String: Any] = [
+            "kind": "state",
+            "enemies": enemies,
+            "bullets": bullets,
+            "hostY": hostY,
+            "score": score,
+            "coins": coins,
+            "gameOver": gameOver
+        ]
+        sendJSON(["type": "game_data", "target_id": peer, "payload": payload])
+    }
+
+    // Гость шлёт свою Y хосту
+    func sendClientY(_ y: CGFloat) {
+        guard let peer = peerID else { return }
+        let payload: [String: Any] = ["kind": "clientY", "y": Double(y)]
+        sendJSON(["type": "game_data", "target_id": peer, "payload": payload])
     }
 
     private func sendJSON(_ dict: [String: Any]) {
         guard let data = try? JSONSerialization.data(withJSONObject: dict),
               let string = String(data: data, encoding: .utf8) else { return }
-
         webSocketTask?.send(.string(string)) { [weak self] error in
             if let error = error {
                 DispatchQueue.main.async {
@@ -135,13 +167,9 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate {
 
         DispatchQueue.main.async {
             switch type {
-
             case "welcome":
-                // Сервер выдал нам уникальный ID
                 if let id = json["your_id"] as? String {
                     self.myPlayerID = id
-                    print("🎁 Получен ID от сервера: \(id)")
-                    // Теперь отправляем имя — сервер нас зарегистрирует
                     self.sendName()
                 }
 
@@ -154,20 +182,43 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate {
                         infos.append(PlayerInfo(id: id, name: name))
                     }
                     self.onlinePlayers = infos
-                    print("👥 Онлайн: \(infos.map { "\($0.name)(\($0.id))" })")
                 }
 
             case "invite_received":
                 if let fromID = json["from_id"] as? String,
                    let fromName = json["from_name"] as? String {
                     self.incomingInvite = PlayerInfo(id: fromID, name: fromName)
-                    print("📨 Приглашение от \(fromName) (\(fromID))")
                 }
 
             case "invite_answer":
-                if let accepted = json["accepted"] as? Bool {
-                    self.inviteAccepted = accepted
-                    print("📬 Ответ: \(accepted ? "принято" : "отклонено")")
+                if let accepted = json["accepted"] as? Bool, accepted {
+                    // Хост: приглашение принято — стартуем игру
+                    if let peer = self.pendingPeerID {
+                        self.peerID = peer
+                        self.isHost = true
+                        self.gameStarted = true
+                    }
+                }
+
+            case "game_data":
+                if let payload = json["payload"] as? [String: Any],
+                   let kind = payload["kind"] as? String {
+                    if kind == "state" && !self.isHost {
+                        // Гость получает состояние от хоста
+                        self.remoteEnemies = payload["enemies"] as? [[String: Any]] ?? []
+                        self.remoteBullets = payload["bullets"] as? [[String: Any]] ?? []
+                        if let hostY = payload["hostY"] as? Double {
+                            self.remoteHeroY = CGFloat(hostY)
+                        }
+                        if let sc = payload["score"] as? Int { self.remoteScore = sc }
+                        if let co = payload["coins"] as? Int { self.remoteCoins = co }
+                        if let go = payload["gameOver"] as? Bool { self.remoteGameOver = go }
+                    } else if kind == "clientY" && self.isHost {
+                        // Хост получает позицию гостя
+                        if let y = payload["y"] as? Double {
+                            self.remoteHeroY = CGFloat(y)
+                        }
+                    }
                 }
 
             default: break
@@ -180,7 +231,6 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate {
         DispatchQueue.main.async {
             self.isConnected = true
             self.connectionError = nil
-            print("✅ WebSocket подключен, ждём welcome...")
         }
     }
 
@@ -190,7 +240,6 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate {
             if self.connectionError == nil {
                 self.connectionError = "Соединение закрыто"
             }
-            print("❌ WebSocket отключен")
         }
     }
 }
