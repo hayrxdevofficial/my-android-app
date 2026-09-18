@@ -13,7 +13,6 @@ struct CosmicSungarovApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) var delegate
 
     init() {
-        // Отключаем затухание экрана во время игры
         UIApplication.shared.isIdleTimerDisabled = true
     }
 
