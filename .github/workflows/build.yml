@@ -13,9 +13,34 @@ jobs:
     - name: Prepare project structure
       run: |
         mkdir -p CosmicSungarov
+
         cp ContentView.swift CosmicSungarov/ContentView.swift
         cp MyApp.swift CosmicSungarov/MyApp.swift
         cp MultiplayerManager.swift CosmicSungarov/MultiplayerManager.swift
+
+        # Скачиваем иконку
+        mkdir -p CosmicSungarov/Assets.xcassets/AppIcon.appiconset
+        curl -L "https://raw.githubusercontent.com/hayrxdevofficial/my-android-app/main/icon.png" -o CosmicSungarov/Assets.xcassets/AppIcon.appiconset/icon.png
+
+        cat << 'EOF' > CosmicSungarov/Assets.xcassets/Contents.json
+        {
+          "info" : { "author" : "xcode", "version" : 1 }
+        }
+        EOF
+
+        cat << 'EOF' > CosmicSungarov/Assets.xcassets/AppIcon.appiconset/Contents.json
+        {
+          "images" : [
+            {
+              "filename" : "icon.png",
+              "idiom" : "universal",
+              "platform" : "ios",
+              "size" : "1024x1024"
+            }
+          ],
+          "info" : { "author" : "xcode", "version" : 1 }
+        }
+        EOF
 
         cat << 'EOF' > CosmicSungarov/Info.plist
         <?xml version="1.0" encoding="UTF-8"?>
@@ -100,6 +125,7 @@ jobs:
               - MyApp.swift
               - ContentView.swift
               - MultiplayerManager.swift
+              - path: Assets.xcassets
             info:
               path: Info.plist
             settings:
