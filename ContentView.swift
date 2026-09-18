@@ -1,13 +1,11 @@
 import SwiftUI
 import UIKit
-import MultipeerConnectivity   // ← ЭТО БЫЛО ПРОПУЩЕНО
 
 // MARK: - Модели
 struct Bullet: Identifiable {
     let id = UUID()
     var x: CGFloat
     var y: CGFloat
-    var fromClient: Bool = false
 }
 
 struct Enemy: Identifiable {
@@ -61,11 +59,10 @@ enum AppScreen { case loading, menu, friends, game, gameOver }
 struct ContentView: View {
     @StateObject private var store = GameStore()
     @StateObject private var loader = ImageLoader()
-    @StateObject private var multiplayer = MultiplayerManager()
+    @StateObject private var network = NetworkManager()
     @State private var screen: AppScreen = .loading
     @State private var lastScore = 0
     @State private var lastCoins = 0
-    @State private var isMultiplayerGame = false
     @State private var showInviteAlert = false
 
     var body: some View {
@@ -76,57 +73,37 @@ struct ContentView: View {
             case .loading:
                 LoadingView()
             case .menu:
-                MenuView(loader: loader, store: store,
-                         onStart: {
-                             isMultiplayerGame = false
-                             withAnimation(.easeInOut(duration: 0.25)) { screen = .game }
-                         },
-                         onFriends: {
-                             multiplayer.startSearch()
-                             withAnimation(.easeInOut(duration: 0.25)) { screen = .friends }
-                         })
+                MenuView(
+                    loader: loader,
+                    store: store,
+                    onStart: { withAnimation(.easeInOut(duration: 0.25)) { screen = .game } },
+                    onFriends: { withAnimation(.easeInOut(duration: 0.25)) { screen = .friends } }
+                )
             case .friends:
                 FriendsView(
-                    multiplayer: multiplayer,
+                    network: network,
                     onBack: {
-                        multiplayer.stopSearch()
+                        network.disconnect()
                         withAnimation(.easeInOut(duration: 0.25)) { screen = .menu }
-                    },
-                    onStartGame: {
-                        isMultiplayerGame = true
-                        multiplayer.stopSearch()
-                        withAnimation(.easeInOut(duration: 0.25)) { screen = .game }
                     }
                 )
             case .game:
                 GameView(
                     loader: loader,
                     store: store,
-                    multiplayer: isMultiplayerGame ? multiplayer : nil,
                     onGameOver: { s, c in
                         lastScore = s; lastCoins = c
                         withAnimation(.easeInOut(duration: 0.25)) { screen = .gameOver }
                     },
                     onExitToMenu: {
-                        if isMultiplayerGame { multiplayer.disconnect() }
-                        isMultiplayerGame = false
                         withAnimation(.easeInOut(duration: 0.25)) { screen = .menu }
                     }
                 )
             case .gameOver:
                 GameOverView(
                     score: lastScore, coins: lastCoins, store: store,
-                    isMultiplayer: isMultiplayerGame,
-                    onRestart: {
-                        if isMultiplayerGame { multiplayer.disconnect() }
-                        isMultiplayerGame = false
-                        withAnimation(.easeInOut(duration: 0.25)) { screen = .menu }
-                    },
-                    onMenu: {
-                        if isMultiplayerGame { multiplayer.disconnect() }
-                        isMultiplayerGame = false
-                        withAnimation(.easeInOut(duration: 0.25)) { screen = .menu }
-                    }
+                    onRestart: { withAnimation(.easeInOut(duration: 0.25)) { screen = .menu } },
+                    onMenu:    { withAnimation(.easeInOut(duration: 0.25)) { screen = .menu } }
                 )
             }
         }
@@ -139,20 +116,26 @@ struct ContentView: View {
                 withAnimation(.easeInOut(duration: 0.4)) { screen = .menu }
             }
         }
-        .onChange(of: multiplayer.incomingInvite?.peer) { peer in
-            showInviteAlert = peer != nil
+        .onChange(of: network.incomingInvite) { newValue in
+            if newValue != nil { showInviteAlert = true }
         }
         .alert("Хотите помочь игроку?", isPresented: $showInviteAlert) {
             Button("Да") {
-                multiplayer.acceptInvite()
-                isMultiplayerGame = true
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                if let peer = network.incomingInvite {
+                    network.respondToInvite(from: peer, accepted: true)
+                    network.incomingInvite = nil
                     withAnimation(.easeInOut(duration: 0.3)) { screen = .game }
                 }
             }
-            Button("Нет", role: .cancel) { multiplayer.declineInvite() }
+            Button("Нет", role: .cancel) {
+                if let peer = network.incomingInvite {
+                    network.respondToInvite(from: peer, accepted: false)
+                }
+                network.incomingInvite = nil
+            }
         } message: {
-            Text("\(multiplayer.incomingInvite?.name ?? "Игрок") приглашает вас в игру")
+            let peerName: String = network.incomingInvite ?? "Игрок"
+            Text(peerName + " приглашает вас в игру")
         }
         .preferredColorScheme(.dark)
         .statusBarHidden(true)
@@ -299,40 +282,35 @@ struct MenuView: View {
     }
 }
 
-// MARK: - Друзья
+// MARK: - Друзья (через WebSocket)
 struct FriendsView: View {
-    @ObservedObject var multiplayer: MultiplayerManager
+    @ObservedObject var network: NetworkManager
     let onBack: () -> Void
-    let onStartGame: () -> Void
 
-    @State private var waiting = false
-    @State private var statusText = "Поиск игроков..."
+    @State private var timer: Timer?
 
     var body: some View {
         GeometryReader { geo in
             ZStack {
                 StarfieldBackground()
-
                 VStack(spacing: 16) {
-                    headerBar(topInset: geo.safeAreaInsets.top)
+                    header(topInset: geo.safeAreaInsets.top)
                     statusBar
                     playersList
                 }
             }
         }
         .ignoresSafeArea()
-        .onChange(of: multiplayer.connectedPeers.count) { count in
-            if count > 0 && multiplayer.isHost {
-                statusText = "Подключено!"
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-                    onStartGame()
-                }
+        .onAppear {
+            network.connect()
+            timer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { _ in
+                if network.isConnected { network.refreshPlayerList() }
             }
         }
+        .onDisappear { timer?.invalidate() }
     }
 
-    // Шапка
-    private func headerBar(topInset: CGFloat) -> some View {
+    private func header(topInset: CGFloat) -> some View {
         HStack {
             Button(action: onBack) {
                 Image(systemName: "chevron.left")
@@ -353,28 +331,31 @@ struct FriendsView: View {
         .padding(.top, max(8, topInset + 4))
     }
 
-    // Статус
     private var statusBar: some View {
         HStack(spacing: 8) {
-            if multiplayer.discoveredPeers.isEmpty && !waiting {
-                ProgressView().tint(.purple)
-            }
-            Text(statusText)
+            Circle()
+                .fill(network.isConnected ? Color.green : Color.red)
+                .frame(width: 10, height: 10)
+            Text(network.isConnected ? "Подключено к серверу" : (network.connectionError ?? "Подключение..."))
                 .font(.system(size: 14, weight: .semibold))
                 .foregroundColor(.white.opacity(0.85))
+            Spacer()
+            if network.isConnected {
+                Button("Обновить") { network.refreshPlayerList() }
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(.cyan)
+            }
         }
-        .padding(.top, 4)
+        .padding(.horizontal, 24)
     }
 
-    // Список игроков
     private var playersList: some View {
         ScrollView {
             VStack(spacing: 10) {
-                ForEach(multiplayer.discoveredPeers, id: \.self) { peer in
-                    peerRow(peer: peer)
+                ForEach(network.onlinePlayers, id: \.self) { playerID in
+                    playerRow(playerID: playerID)
                 }
-
-                if multiplayer.discoveredPeers.isEmpty {
+                if network.onlinePlayers.isEmpty {
                     emptyState
                 }
             }
@@ -383,43 +364,31 @@ struct FriendsView: View {
         }
     }
 
-    // Один игрок — вынесено в отдельный view, чтобы компилятор не сходил с ума
-    private func peerRow(peer: MCPeerID) -> some View {
-        Button(action: { invite(peer) }) {
+    private func playerRow(playerID: String) -> some View {
+        Button(action: { network.sendInvite(to: playerID) }) {
             HStack(spacing: 14) {
-                peerAvatar
-                peerInfo(peer: peer)
+                ZStack {
+                    Circle().fill(Color.purple.opacity(0.3)).frame(width: 44, height: 44)
+                    Image(systemName: "person.fill").foregroundColor(.white)
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(playerID)
+                        .font(.system(size: 16, weight: .bold))
+                        .foregroundColor(.white)
+                    Text("Нажмите, чтобы пригласить")
+                        .font(.system(size: 12))
+                        .foregroundColor(.white.opacity(0.6))
+                }
                 Spacer()
                 Image(systemName: "paperplane.fill").foregroundColor(.blue)
             }
             .padding(12)
             .background(Color.white.opacity(0.06))
             .cornerRadius(14)
-            .overlay(
-                RoundedRectangle(cornerRadius: 14)
-                    .stroke(Color.purple.opacity(0.4), lineWidth: 1)
-            )
+            .overlay(RoundedRectangle(cornerRadius: 14)
+                .stroke(Color.purple.opacity(0.4), lineWidth: 1))
         }
         .buttonStyle(.plain)
-        .disabled(waiting)
-    }
-
-    private var peerAvatar: some View {
-        ZStack {
-            Circle().fill(Color.purple.opacity(0.3)).frame(width: 44, height: 44)
-            Image(systemName: "person.fill").foregroundColor(.white)
-        }
-    }
-
-    private func peerInfo(peer: MCPeerID) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(peer.displayName)
-                .font(.system(size: 16, weight: .bold))
-                .foregroundColor(.white)
-            Text("Нажмите, чтобы пригласить")
-                .font(.system(size: 12))
-                .foregroundColor(.white.opacity(0.6))
-        }
     }
 
     private var emptyState: some View {
@@ -427,7 +396,9 @@ struct FriendsView: View {
             Image(systemName: "wifi")
                 .font(.system(size: 44))
                 .foregroundColor(.purple.opacity(0.6))
-            Text("Убедитесь, что друг открыл игру\nи находится в той же Wi-Fi сети")
+            Text(network.isConnected
+                 ? "Пока никого нет онлайн.\nПопроси друга открыть игру."
+                 : "Подключение к серверу...")
                 .font(.system(size: 13))
                 .foregroundColor(.white.opacity(0.7))
                 .multilineTextAlignment(.center)
@@ -435,25 +406,17 @@ struct FriendsView: View {
         }
         .padding(.top, 40)
     }
-
-    private func invite(_ peer: MCPeerID) {
-        waiting = true
-        statusText = "Отправлено приглашение \(peer.displayName)..."
-        multiplayer.invite(peer)
-    }
 }
 
-// MARK: - Игра
+// MARK: - Игра (одиночная)
 struct GameView: View {
     @ObservedObject var loader: ImageLoader
     @ObservedObject var store: GameStore
-    var multiplayer: MultiplayerManager? = nil
     let onGameOver: (Int, Int) -> Void
     let onExitToMenu: () -> Void
 
     @State private var heroY: CGFloat = 0
     @State private var heroTargetY: CGFloat = 0
-    @State private var clientHeroY: CGFloat = 0
     @State private var bullets: [Bullet] = []
     @State private var enemies: [Enemy] = []
     @State private var score = 0
@@ -461,7 +424,6 @@ struct GameView: View {
     @State private var isGameOver = false
     @State private var spawnTimer: Double = 0
     @State private var fireTimer: Double = 0
-    @State private var netTimer: Double = 0
 
     private let heroSizeRatio: CGFloat = 0.13
     private let enemySizeRatio: CGFloat = 0.11
@@ -474,221 +436,118 @@ struct GameView: View {
 
     let timer = Timer.publish(every: 1.0 / 60.0, on: .main, in: .common).autoconnect()
 
-    var isMultiplayer: Bool { multiplayer != nil }
-    var isHost: Bool { multiplayer?.isHost ?? true }
-
-    var enemySpeedMultiplier: CGFloat {
-        1.0 + min(CGFloat(score) * 0.008, 0.5)
-    }
-    var currentSpawnInterval: Double {
-        max(minSpawnInterval, baseSpawnInterval - Double(score) * 0.005)
-    }
+    var enemySpeedMultiplier: CGFloat { 1.0 + min(CGFloat(score) * 0.008, 0.5) }
+    var currentSpawnInterval: Double { max(minSpawnInterval, baseSpawnInterval - Double(score) * 0.005) }
 
     var body: some View {
         GeometryReader { geo in
             let w = geo.size.width
             let h = geo.size.height
             let heroSize = w * heroSizeRatio
-            let heroX: CGFloat = isMultiplayer ? w * 0.13 : w * 0.15
-            let clientHeroX: CGFloat = w * 0.24
+            let heroX = w * 0.15
             let enemySize = w * enemySizeRatio
             let bulletSize = w * bulletSizeRatio
 
-            let topInset = geo.safeAreaInsets.top
-            let leadingInset = geo.safeAreaInsets.leading
-            let trailingInset = geo.safeAreaInsets.trailing
-
             ZStack {
                 StarfieldBackground()
-                enemiesLayer(enemySize: enemySize)
-                bulletsLayer(bulletSize: bulletSize)
-                clientHeroLayer(heroSize: heroSize, x: clientHeroX)
-                selfHeroLayer(heroSize: heroSize, x: heroX)
-                hudLayer(topInset: topInset, leadingInset: leadingInset, trailingInset: trailingInset)
+
+                ForEach(enemies) { e in
+                    if let img = loader.enemy {
+                        Image(uiImage: img)
+                            .resizable().aspectRatio(contentMode: .fit)
+                            .frame(width: e.size, height: e.size)
+                            .position(x: e.x, y: e.y)
+                            .shadow(color: .red.opacity(0.5), radius: 8)
+                    }
+                }
+
+                ForEach(bullets) { b in
+                    if let img = loader.bullet {
+                        Image(uiImage: img)
+                            .resizable().aspectRatio(contentMode: .fit)
+                            .frame(width: bulletSize * 1.8, height: bulletSize)
+                            .rotationEffect(.degrees(90))
+                            .position(x: b.x, y: b.y)
+                            .shadow(color: .yellow, radius: 8)
+                    } else {
+                        Circle().fill(Color.yellow)
+                            .frame(width: bulletSize, height: bulletSize)
+                            .position(x: b.x, y: b.y)
+                    }
+                }
+
+                if let hero = loader.hero {
+                    Image(uiImage: hero)
+                        .resizable().aspectRatio(contentMode: .fit)
+                        .frame(width: heroSize, height: heroSize)
+                        .rotationEffect(.degrees(sin(Double(score)) * 5))
+                        .position(x: heroX, y: heroY)
+                        .shadow(color: .purple.opacity(0.8), radius: 15)
+                }
+
+                VStack(spacing: 0) {
+                    HStack(spacing: 10) {
+                        Text("\(score)")
+                            .font(.system(size: 32, weight: .heavy, design: .rounded))
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 16).padding(.vertical, 6)
+                            .background(Color.black.opacity(0.5))
+                            .overlay(RoundedRectangle(cornerRadius: 18)
+                                .stroke(Color.purple.opacity(0.6), lineWidth: 1.5))
+                            .cornerRadius(18)
+
+                        HStack(spacing: 6) {
+                            Image(systemName: "star.circle.fill")
+                                .foregroundColor(Color(red: 1.0, green: 0.85, blue: 0.24))
+                            Text("\(earnedCoins)")
+                                .font(.system(size: 20, weight: .heavy, design: .rounded))
+                                .foregroundColor(.white)
+                        }
+                        .padding(.horizontal, 14).padding(.vertical, 6)
+                        .background(Color.black.opacity(0.5))
+                        .overlay(RoundedRectangle(cornerRadius: 18)
+                            .stroke(Color.purple.opacity(0.6), lineWidth: 1.5))
+                        .cornerRadius(18)
+
+                        Spacer()
+
+                        Button(action: exitGame) {
+                            Image(systemName: "house.fill")
+                                .font(.system(size: 18, weight: .bold))
+                                .foregroundColor(.white)
+                                .padding(10)
+                                .background(Color.black.opacity(0.5))
+                                .clipShape(Circle())
+                                .overlay(Circle().stroke(Color.purple.opacity(0.6), lineWidth: 1.5))
+                        }
+                    }
+                    .padding(.leading, max(16, geo.safeAreaInsets.leading + 8))
+                    .padding(.trailing, max(16, geo.safeAreaInsets.trailing + 8))
+                    .padding(.top, max(8, geo.safeAreaInsets.top + 4))
+                    Spacer()
+                }
             }
             .contentShape(Rectangle())
             .gesture(
                 DragGesture(minimumDistance: 0)
-                    .onChanged { value in
-                        heroTargetY = value.location.y
-                        if isMultiplayer && !isHost {
-                            multiplayer?.send(.clientHero(y: heroTargetY))
-                        }
-                    }
+                    .onChanged { value in heroTargetY = value.location.y }
             )
             .onAppear {
                 heroY = h * 0.5
                 heroTargetY = h * 0.5
-                clientHeroY = h * 0.5
-                if isMultiplayer { setupNetworking() }
             }
             .onReceive(timer) { _ in
                 if !isGameOver {
                     tick(w: w, h: h, heroSize: heroSize, heroX: heroX,
-                         enemySize: enemySize, bulletSize: bulletSize,
-                         clientHeroX: clientHeroX)
+                         enemySize: enemySize, bulletSize: bulletSize)
                 }
             }
         }
         .ignoresSafeArea()
     }
 
-    // MARK: Слои
-    private func enemiesLayer(enemySize: CGFloat) -> some View {
-        ForEach(enemies) { e in
-            Group {
-                if let img = loader.enemy {
-                    Image(uiImage: img)
-                        .resizable().aspectRatio(contentMode: .fit)
-                        .frame(width: e.size, height: e.size)
-                        .position(x: e.x, y: e.y)
-                        .shadow(color: .red.opacity(0.5), radius: 8)
-                }
-            }
-        }
-    }
-
-    private func bulletsLayer(bulletSize: CGFloat) -> some View {
-        ForEach(bullets) { b in
-            Group {
-                if let img = loader.bullet {
-                    Image(uiImage: img)
-                        .resizable().aspectRatio(contentMode: .fit)
-                        .frame(width: bulletSize * 1.8, height: bulletSize)
-                        .rotationEffect(.degrees(90))
-                        .position(x: b.x, y: b.y)
-                        .shadow(color: b.fromClient ? .cyan : .yellow, radius: 8)
-                } else {
-                    Circle()
-                        .fill(b.fromClient ? Color.cyan : Color.yellow)
-                        .frame(width: bulletSize, height: bulletSize)
-                        .position(x: b.x, y: b.y)
-                }
-            }
-        }
-    }
-
-    private func clientHeroLayer(heroSize: CGFloat, x: CGFloat) -> some View {
-        Group {
-            if isMultiplayer, let hero = loader.hero {
-                Image(uiImage: hero)
-                    .resizable().aspectRatio(contentMode: .fit)
-                    .frame(width: heroSize, height: heroSize)
-                    .hueRotation(.degrees(isHost ? 0 : 60))
-                    .position(x: x, y: clientHeroY)
-                    .shadow(color: .cyan.opacity(0.8), radius: 15)
-            }
-        }
-    }
-
-    private func selfHeroLayer(heroSize: CGFloat, x: CGFloat) -> some View {
-        Group {
-            if let hero = loader.hero {
-                Image(uiImage: hero)
-                    .resizable().aspectRatio(contentMode: .fit)
-                    .frame(width: heroSize, height: heroSize)
-                    .rotationEffect(.degrees(sin(Double(score)) * 5))
-                    .position(x: x, y: heroY)
-                    .shadow(color: .purple.opacity(0.8), radius: 15)
-            }
-        }
-    }
-
-    private func hudLayer(topInset: CGFloat, leadingInset: CGFloat, trailingInset: CGFloat) -> some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 10) {
-                scorePill
-                coinsPill
-                if isMultiplayer { coopPill }
-                Spacer()
-                Button(action: exitGame) {
-                    Image(systemName: "house.fill")
-                        .font(.system(size: 18, weight: .bold))
-                        .foregroundColor(.white)
-                        .padding(10)
-                        .background(Color.black.opacity(0.5))
-                        .clipShape(Circle())
-                        .overlay(Circle().stroke(Color.purple.opacity(0.6), lineWidth: 1.5))
-                }
-            }
-            .padding(.leading, max(16, leadingInset + 8))
-            .padding(.trailing, max(16, trailingInset + 8))
-            .padding(.top, max(8, topInset + 4))
-            Spacer()
-        }
-    }
-
-    private var scorePill: some View {
-        Text("\(score)")
-            .font(.system(size: 32, weight: .heavy, design: .rounded))
-            .foregroundColor(.white)
-            .padding(.horizontal, 16).padding(.vertical, 6)
-            .background(Color.black.opacity(0.5))
-            .overlay(RoundedRectangle(cornerRadius: 18)
-                .stroke(Color.purple.opacity(0.6), lineWidth: 1.5))
-            .cornerRadius(18)
-    }
-
-    private var coinsPill: some View {
-        HStack(spacing: 6) {
-            Image(systemName: "star.circle.fill")
-                .foregroundColor(Color(red: 1.0, green: 0.85, blue: 0.24))
-            Text("\(earnedCoins)")
-                .font(.system(size: 20, weight: .heavy, design: .rounded))
-                .foregroundColor(.white)
-        }
-        .padding(.horizontal, 14).padding(.vertical, 6)
-        .background(Color.black.opacity(0.5))
-        .overlay(RoundedRectangle(cornerRadius: 18)
-            .stroke(Color.purple.opacity(0.6), lineWidth: 1.5))
-        .cornerRadius(18)
-    }
-
-    private var coopPill: some View {
-        HStack(spacing: 4) {
-            Image(systemName: "person.2.fill").font(.system(size: 12))
-            Text("Co-op").font(.system(size: 12, weight: .bold))
-        }
-        .foregroundColor(.cyan)
-        .padding(.horizontal, 10).padding(.vertical, 6)
-        .background(Color.black.opacity(0.5))
-        .overlay(RoundedRectangle(cornerRadius: 18)
-            .stroke(Color.cyan.opacity(0.6), lineWidth: 1.5))
-        .cornerRadius(18)
-    }
-
-    // MARK: Сетевые колбэки
-    func setupNetworking() {
-        guard let mp = multiplayer else { return }
-        mp.onMessage = { msg in
-            switch msg {
-            case .clientHero(let y):
-                if isHost { clientHeroY = y }
-            case .gameState(let state):
-                if !isHost {
-                    // ← ФИКС: убрали передачу id, у Enemy есть let id = UUID()
-                    enemies = state.enemies.map { e in
-                        Enemy(x: e.x, y: e.y, size: e.size)
-                    }
-                    bullets = state.bullets.map { b in
-                        Bullet(x: b.x, y: b.y, fromClient: b.fromClient)
-                    }
-                    clientHeroY = state.hostHeroY
-                    score = state.score
-                    earnedCoins = state.coins
-                    if state.isGameOver { triggerGameOver() }
-                }
-            default: break
-            }
-        }
-        mp.onDisconnect = {
-            if !isGameOver { triggerGameOver() }
-        }
-    }
-
-    // MARK: Логика
     func tick(w: CGFloat, h: CGFloat, heroSize: CGFloat, heroX: CGFloat,
-              enemySize: CGFloat, bulletSize: CGFloat, clientHeroX: CGFloat) {
+              enemySize: CGFloat, bulletSize: CGFloat) {
 
         heroY += (heroTargetY - heroY) * 0.2
         let minY = heroSize / 2 + 10
@@ -696,15 +555,10 @@ struct GameView: View {
         if heroY < minY { heroY = minY }
         if heroY > maxY { heroY = maxY }
 
-        guard !isMultiplayer || isHost else { return }
-
         fireTimer += 1.0 / 60.0
         if fireTimer >= fireInterval {
             fireTimer = 0
-            bullets.append(Bullet(x: heroX + heroSize * 0.4, y: heroY, fromClient: false))
-            if isMultiplayer {
-                bullets.append(Bullet(x: clientHeroX + heroSize * 0.4, y: clientHeroY, fromClient: true))
-            }
+            bullets.append(Bullet(x: heroX + heroSize * 0.4, y: heroY))
         }
 
         let bSpeed = w * bulletSpeedRatio
@@ -748,33 +602,8 @@ struct GameView: View {
             let dx = abs(heroX - e.x)
             let dy2 = abs(heroY - e.y)
             if dx < (heroSize + e.size) / 2 - 10 && dy2 < (heroSize + e.size) / 2 - 10 {
-                triggerGameOver(); return
-            }
-        }
-        if isMultiplayer {
-            for e in enemies {
-                let dx = abs(clientHeroX - e.x)
-                let dy2 = abs(clientHeroY - e.y)
-                if dx < (heroSize + e.size) / 2 - 10 && dy2 < (heroSize + e.size) / 2 - 10 {
-                    triggerGameOver(); return
-                }
-            }
-        }
-
-        if isMultiplayer && isHost {
-            netTimer += 1.0 / 60.0
-            if netTimer >= 0.05 {
-                netTimer = 0
-                let state = NetGameState(
-                    hostHeroY: heroY,
-                    clientHeroY: clientHeroY,
-                    enemies: enemies.map { NetEnemy(x: $0.x, y: $0.y, size: $0.size) },
-                    bullets: bullets.map { NetBullet(x: $0.x, y: $0.y, fromClient: $0.fromClient) },
-                    score: score,
-                    coins: earnedCoins,
-                    isGameOver: false
-                )
-                multiplayer?.send(.gameState(state: state))
+                triggerGameOver()
+                return
             }
         }
     }
@@ -783,12 +612,6 @@ struct GameView: View {
         guard !isGameOver else { return }
         isGameOver = true
         store.commit(score: score, coins: earnedCoins)
-        if isMultiplayer && isHost {
-            let state = NetGameState(hostHeroY: heroY, clientHeroY: clientHeroY,
-                                     enemies: [], bullets: [], score: score,
-                                     coins: earnedCoins, isGameOver: true)
-            multiplayer?.send(.gameState(state: state), reliable: true)
-        }
         onGameOver(score, earnedCoins)
     }
 
@@ -805,7 +628,6 @@ struct GameOverView: View {
     let score: Int
     let coins: Int
     @ObservedObject var store: GameStore
-    var isMultiplayer: Bool = false
     let onRestart: () -> Void
     let onMenu: () -> Void
 
@@ -831,12 +653,6 @@ struct GameOverView: View {
                         Text("+\(coins) монет")
                             .font(.system(size: 16, weight: .bold))
                             .foregroundColor(Color(red: 1.0, green: 0.85, blue: 0.24))
-                    }
-
-                    if isMultiplayer {
-                        Text("Co-op партия")
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundColor(.cyan)
                     }
 
                     if isRecord {
