@@ -64,6 +64,7 @@ struct ContentView: View {
     @State private var lastScore = 0
     @State private var lastCoins = 0
     @State private var showInviteAlert = false
+    @State private var multiplayerGame = false
 
     var body: some View {
         ZStack {
@@ -76,7 +77,10 @@ struct ContentView: View {
                 MenuView(
                     loader: loader,
                     store: store,
-                    onStart: { withAnimation(.easeInOut(duration: 0.25)) { screen = .game } },
+                    onStart: {
+                        multiplayerGame = false
+                        withAnimation(.easeInOut(duration: 0.25)) { screen = .game }
+                    },
                     onFriends: { withAnimation(.easeInOut(duration: 0.25)) { screen = .friends } }
                 )
             case .friends:
@@ -91,19 +95,30 @@ struct ContentView: View {
                 GameView(
                     loader: loader,
                     store: store,
+                    network: multiplayerGame ? network : nil,
                     onGameOver: { s, c in
                         lastScore = s; lastCoins = c
                         withAnimation(.easeInOut(duration: 0.25)) { screen = .gameOver }
                     },
                     onExitToMenu: {
+                        network.disconnect()
+                        multiplayerGame = false
                         withAnimation(.easeInOut(duration: 0.25)) { screen = .menu }
                     }
                 )
             case .gameOver:
                 GameOverView(
                     score: lastScore, coins: lastCoins, store: store,
-                    onRestart: { withAnimation(.easeInOut(duration: 0.25)) { screen = .menu } },
-                    onMenu:    { withAnimation(.easeInOut(duration: 0.25)) { screen = .menu } }
+                    onRestart: {
+                        network.disconnect()
+                        multiplayerGame = false
+                        withAnimation(.easeInOut(duration: 0.25)) { screen = .menu }
+                    },
+                    onMenu: {
+                        network.disconnect()
+                        multiplayerGame = false
+                        withAnimation(.easeInOut(duration: 0.25)) { screen = .menu }
+                    }
                 )
             }
         }
@@ -119,9 +134,17 @@ struct ContentView: View {
         .onChange(of: network.incomingInvite) { newValue in
             if newValue != nil { showInviteAlert = true }
         }
+        .onChange(of: network.gameStarted) { started in
+            // Хост тоже переходит в игру, когда гость принял приглашение
+            if started && (screen == .friends || screen == .menu) {
+                multiplayerGame = true
+                withAnimation(.easeInOut(duration: 0.3)) { screen = .game }
+            }
+        }
         .alert("Хотите помочь игроку?", isPresented: $showInviteAlert) {
             Button("Да") {
                 if let peer = network.incomingInvite {
+                    multiplayerGame = true
                     network.respondToInvite(from: peer.id, accepted: true)
                     network.incomingInvite = nil
                     withAnimation(.easeInOut(duration: 0.3)) { screen = .game }
@@ -411,15 +434,17 @@ struct FriendsView: View {
     }
 }
 
-// MARK: - Игра (одиночная)
+// MARK: - Игра (одиночная и кооператив)
 struct GameView: View {
     @ObservedObject var loader: ImageLoader
     @ObservedObject var store: GameStore
+    var network: NetworkManager? = nil
     let onGameOver: (Int, Int) -> Void
     let onExitToMenu: () -> Void
 
     @State private var heroY: CGFloat = 0
     @State private var heroTargetY: CGFloat = 0
+    @State private var remoteHeroY: CGFloat = 0
     @State private var bullets: [Bullet] = []
     @State private var enemies: [Enemy] = []
     @State private var score = 0
@@ -427,6 +452,7 @@ struct GameView: View {
     @State private var isGameOver = false
     @State private var spawnTimer: Double = 0
     @State private var fireTimer: Double = 0
+    @State private var netSendTimer: Double = 0
 
     private let heroSizeRatio: CGFloat = 0.13
     private let enemySizeRatio: CGFloat = 0.11
@@ -439,6 +465,9 @@ struct GameView: View {
 
     let timer = Timer.publish(every: 1.0 / 60.0, on: .main, in: .common).autoconnect()
 
+    var isMultiplayer: Bool { network != nil }
+    var isHost: Bool { network?.isHost ?? false }
+
     var enemySpeedMultiplier: CGFloat { 1.0 + min(CGFloat(score) * 0.008, 0.5) }
     var currentSpawnInterval: Double { max(minSpawnInterval, baseSpawnInterval - Double(score) * 0.005) }
 
@@ -447,13 +476,15 @@ struct GameView: View {
             let w = geo.size.width
             let h = geo.size.height
             let heroSize = w * heroSizeRatio
-            let heroX = w * 0.15
+            let myHeroX: CGFloat = w * 0.13
+            let peerHeroX: CGFloat = w * 0.24
             let enemySize = w * enemySizeRatio
             let bulletSize = w * bulletSizeRatio
 
             ZStack {
                 StarfieldBackground()
 
+                // Враги
                 ForEach(enemies) { e in
                     if let img = loader.enemy {
                         Image(uiImage: img)
@@ -464,6 +495,7 @@ struct GameView: View {
                     }
                 }
 
+                // Пули
                 ForEach(bullets) { b in
                     if let img = loader.bullet {
                         Image(uiImage: img)
@@ -479,15 +511,27 @@ struct GameView: View {
                     }
                 }
 
+                // Партнёр (в мультиплеере) — справа
+                if isMultiplayer, let hero = loader.hero {
+                    Image(uiImage: hero)
+                        .resizable().aspectRatio(contentMode: .fit)
+                        .frame(width: heroSize, height: heroSize)
+                        .hueRotation(.degrees(60))
+                        .position(x: peerHeroX, y: remoteHeroY)
+                        .shadow(color: .cyan.opacity(0.8), radius: 15)
+                }
+
+                // Своя птица — слева
                 if let hero = loader.hero {
                     Image(uiImage: hero)
                         .resizable().aspectRatio(contentMode: .fit)
                         .frame(width: heroSize, height: heroSize)
                         .rotationEffect(.degrees(sin(Double(score)) * 5))
-                        .position(x: heroX, y: heroY)
+                        .position(x: myHeroX, y: heroY)
                         .shadow(color: .purple.opacity(0.8), radius: 15)
                 }
 
+                // HUD
                 VStack(spacing: 0) {
                     HStack(spacing: 10) {
                         Text("\(score)")
@@ -511,6 +555,19 @@ struct GameView: View {
                         .overlay(RoundedRectangle(cornerRadius: 18)
                             .stroke(Color.purple.opacity(0.6), lineWidth: 1.5))
                         .cornerRadius(18)
+
+                        if isMultiplayer {
+                            HStack(spacing: 4) {
+                                Image(systemName: "person.2.fill").font(.system(size: 12))
+                                Text("Co-op").font(.system(size: 12, weight: .bold))
+                            }
+                            .foregroundColor(.cyan)
+                            .padding(.horizontal, 10).padding(.vertical, 6)
+                            .background(Color.black.opacity(0.5))
+                            .overlay(RoundedRectangle(cornerRadius: 18)
+                                .stroke(Color.cyan.opacity(0.6), lineWidth: 1.5))
+                            .cornerRadius(18)
+                        }
 
                         Spacer()
 
@@ -538,10 +595,12 @@ struct GameView: View {
             .onAppear {
                 heroY = h * 0.5
                 heroTargetY = h * 0.5
+                remoteHeroY = h * 0.5
             }
             .onReceive(timer) { _ in
                 if !isGameOver {
-                    tick(w: w, h: h, heroSize: heroSize, heroX: heroX,
+                    tick(w: w, h: h, heroSize: heroSize,
+                         myHeroX: myHeroX, peerHeroX: peerHeroX,
                          enemySize: enemySize, bulletSize: bulletSize)
                 }
             }
@@ -549,19 +608,56 @@ struct GameView: View {
         .ignoresSafeArea()
     }
 
-    func tick(w: CGFloat, h: CGFloat, heroSize: CGFloat, heroX: CGFloat,
+    func tick(w: CGFloat, h: CGFloat, heroSize: CGFloat,
+              myHeroX: CGFloat, peerHeroX: CGFloat,
               enemySize: CGFloat, bulletSize: CGFloat) {
 
+        // Своя птица двигается в любом режиме
         heroY += (heroTargetY - heroY) * 0.2
         let minY = heroSize / 2 + 10
         let maxY = h - heroSize / 2 - 10
         if heroY < minY { heroY = minY }
         if heroY > maxY { heroY = maxY }
 
+        // ==== ГОСТЬ ====
+        if isMultiplayer && !isHost {
+            // Отправляем свою Y хосту (30 раз/сек)
+            netSendTimer += 1.0 / 60.0
+            if netSendTimer >= 0.033 {
+                netSendTimer = 0
+                network?.sendClientY(heroY)
+            }
+            // Применяем состояние от хоста
+            if let net = network {
+                remoteHeroY = net.remoteHeroY
+                score = net.remoteScore
+                earnedCoins = net.remoteCoins
+                enemies = net.remoteEnemies.compactMap { dict in
+                    guard let x = dict["x"] as? Double,
+                          let y = dict["y"] as? Double,
+                          let s = dict["size"] as? Double else { return nil }
+                    return Enemy(x: CGFloat(x), y: CGFloat(y), size: CGFloat(s))
+                }
+                bullets = net.remoteBullets.compactMap { dict in
+                    guard let x = dict["x"] as? Double,
+                          let y = dict["y"] as? Double else { return nil }
+                    return Bullet(x: CGFloat(x), y: CGFloat(y))
+                }
+                if net.remoteGameOver && !isGameOver {
+                    triggerGameOver()
+                }
+            }
+            return
+        }
+
+        // ==== ХОСТ или ОДИНОЧНАЯ ====
         fireTimer += 1.0 / 60.0
         if fireTimer >= fireInterval {
             fireTimer = 0
-            bullets.append(Bullet(x: heroX + heroSize * 0.4, y: heroY))
+            bullets.append(Bullet(x: myHeroX + heroSize * 0.4, y: heroY))
+            if isMultiplayer {
+                bullets.append(Bullet(x: peerHeroX + heroSize * 0.4, y: remoteHeroY))
+            }
         }
 
         let bSpeed = w * bulletSpeedRatio
@@ -583,6 +679,7 @@ struct GameView: View {
             }
         }
 
+        // Столкновения пуль
         var bulletsToRemove = Set<UUID>()
         var enemiesToRemove = Set<UUID>()
         for b in bullets {
@@ -601,12 +698,40 @@ struct GameView: View {
         bullets.removeAll { bulletsToRemove.contains($0.id) }
         enemies.removeAll { enemiesToRemove.contains($0.id) }
 
+        // Своя птица vs враги
         for e in enemies {
-            let dx = abs(heroX - e.x)
+            let dx = abs(myHeroX - e.x)
             let dy2 = abs(heroY - e.y)
             if dx < (heroSize + e.size) / 2 - 10 && dy2 < (heroSize + e.size) / 2 - 10 {
-                triggerGameOver()
-                return
+                triggerGameOver(); return
+            }
+        }
+        // Партнёр vs враги
+        if isMultiplayer {
+            for e in enemies {
+                let dx = abs(peerHeroX - e.x)
+                let dy2 = abs(remoteHeroY - e.y)
+                if dx < (heroSize + e.size) / 2 - 10 && dy2 < (heroSize + e.size) / 2 - 10 {
+                    triggerGameOver(); return
+                }
+            }
+        }
+
+        // Хост отправляет состояние гостю (15 раз/сек)
+        if isMultiplayer && isHost {
+            netSendTimer += 1.0 / 60.0
+            if netSendTimer >= 0.066 {
+                netSendTimer = 0
+                let enemiesJSON = enemies.map { ["x": Double($0.x), "y": Double($0.y), "size": Double($0.size)] }
+                let bulletsJSON = bullets.map { ["x": Double($0.x), "y": Double($0.y)] }
+                network?.sendGameState(
+                    enemies: enemiesJSON,
+                    bullets: bulletsJSON,
+                    hostY: heroY,
+                    score: score,
+                    coins: earnedCoins,
+                    gameOver: false
+                )
             }
         }
     }
@@ -615,6 +740,10 @@ struct GameView: View {
         guard !isGameOver else { return }
         isGameOver = true
         store.commit(score: score, coins: earnedCoins)
+        if isMultiplayer && isHost {
+            network?.sendGameState(enemies: [], bullets: [], hostY: heroY,
+                                   score: score, coins: earnedCoins, gameOver: true)
+        }
         onGameOver(score, earnedCoins)
     }
 
