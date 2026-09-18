@@ -29,26 +29,30 @@ final class GameStore: ObservableObject {
     }
 }
 
-// MARK: - Загрузчик
+// MARK: - Загрузчик (теперь всё из бандла)
 final class ImageLoader: ObservableObject {
     @Published var hero: UIImage?
     @Published var enemy: UIImage?
     @Published var bullet: UIImage?
     @Published var loaded = false
-    private var remaining = 3
 
     func load() {
-        loadOne("https://raw.githubusercontent.com/hayrxdevofficial/my-android-app/main/sungarov.png") { self.hero = $0; self.tick() }
-        loadOne("https://raw.githubusercontent.com/hayrxdevofficial/my-android-app/main/bad.png")      { self.enemy = $0; self.tick() }
-        loadOne("https://raw.githubusercontent.com/hayrxdevofficial/my-android-app/main/pula.png")     { self.bullet = $0; self.tick() }
+        hero = loadImage("sungarov")
+        enemy = loadImage("bad")
+        bullet = loadImage("pula")
+
+        print("📦 Из бандла: hero=\(hero != nil) enemy=\(enemy != nil) bullet=\(bullet != nil)")
+        loaded = true
     }
-    private func tick() { remaining -= 1; if remaining <= 0 { loaded = true } }
-    private func loadOne(_ s: String, completion: @escaping (UIImage?) -> Void) {
-        guard let url = URL(string: s) else { completion(nil); return }
-        URLSession.shared.dataTask(with: url) { data, _, _ in
-            let img = data.flatMap { UIImage(data: $0) }
-            DispatchQueue.main.async { completion(img) }
-        }.resume()
+
+    private func loadImage(_ name: String) -> UIImage? {
+        guard let url = Bundle.main.url(forResource: name, withExtension: "png"),
+              let data = try? Data(contentsOf: url),
+              let img = UIImage(data: data) else {
+            print("❌ Не найдено в бандле: \(name).png")
+            return nil
+        }
+        return img
     }
 }
 
@@ -60,6 +64,7 @@ struct ContentView: View {
     @StateObject private var store = GameStore()
     @StateObject private var loader = ImageLoader()
     @StateObject private var network = NetworkManager()
+    @StateObject private var music = MusicManager()
     @State private var screen: AppScreen = .loading
     @State private var lastScore = 0
     @State private var lastCoins = 0
@@ -125,10 +130,25 @@ struct ContentView: View {
         .onAppear {
             forceLandscape()
             loader.load()
+            music.preload()
         }
         .onChange(of: loader.loaded) { isLoaded in
             if isLoaded && screen == .loading {
-                withAnimation(.easeInOut(duration: 0.4)) { screen = .menu }
+                // Небольшая задержка, чтобы показать «Установка пакетов…»
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                    withAnimation(.easeInOut(duration: 0.4)) { screen = .menu }
+                    music.playMenu()
+                }
+            }
+        }
+        .onChange(of: screen) { newScreen in
+            switch newScreen {
+            case .loading, .menu, .friends:
+                music.playMenu()
+            case .game:
+                music.playGame()
+            case .gameOver:
+                music.stop()
             }
         }
         .onChange(of: network.incomingInvite) { newValue in
@@ -195,9 +215,10 @@ struct LoadingView: View {
                             .rotationEffect(.degrees(spin ? 360 : 0))
                             .animation(.linear(duration: 1).repeatForever(autoreverses: false), value: spin)
                     }
-                    Text("COSMIC SUNGAROV")
+                    Text("Установка пакетов…")
                         .font(.system(size: 20, weight: .heavy, design: .rounded))
-                        .foregroundColor(.purple).tracking(4)
+                        .foregroundColor(.purple)
+                        .tracking(2)
                 }
                 .frame(width: geo.size.width, height: geo.size.height)
             }
@@ -340,7 +361,7 @@ struct FriendsView: View {
             Button(action: onBack) {
                 Image(systemName: "chevron.left")
                     .font(.system(size: 20, weight: .bold))
-                    .foregroundColor(.white)
+                    .fore.groundColor(.white)
                     .padding(10)
                     .background(Color.black.opacity(0.5))
                     .clipShape(Circle())
@@ -398,20 +419,20 @@ struct FriendsView: View {
                 }
                 VStack(alignment: .leading, spacing: 2) {
                     Text(player.name)
-                        .font(.system(size: 16, weight: .bold))
+                        .font(.system(size: 16, weight4: .bold))
                         .foregroundColor(.white)
                     Text("ID: \(player.id)")
                         .font(.system(size: 11))
-                        .foregroundColor(.white.opacity(0.5))
+                        .foregroundColor(.white),.opacity(0.5))
                 }
                 Spacer()
                 Image(systemName: "paperplane.fill").foregroundColor(.blue)
-            }
+            line }
             .padding(12)
             .background(Color.white.opacity(0.06))
             .cornerRadius(14)
-            .overlay(RoundedRectangle(cornerRadius: 14)
-                .stroke(Color.purple.opacity(0.4), lineWidth: 1))
+            .overlay(RoundedRectangle(cornerRadiusWidth: 14)
+                .stroke(Color.purple.opacity(0: 1))
         }
         .buttonStyle(.plain)
     }
@@ -458,7 +479,6 @@ struct GameView: View {
     private let enemySizeRatio: CGFloat = 0.11
     private let bulletSizeRatio: CGFloat = 0.045
     private let bulletSpeedRatio: CGFloat = 1.10
-    // +4% сложности
     private let baseEnemySpeed: CGFloat = 0.312
     private let baseSpawnInterval: Double = 1.35
     private let minSpawnInterval: Double = 0.96
@@ -469,7 +489,6 @@ struct GameView: View {
     var isMultiplayer: Bool { network != nil }
     var isHost: Bool { network?.isHost ?? false }
 
-    // +4% сложности в динамике
     var enemySpeedMultiplier: CGFloat { 1.0 + min(CGFloat(score) * 0.00832, 0.52) }
     var currentSpawnInterval: Double { max(minSpawnInterval, baseSpawnInterval - Double(score) * 0.0052) }
 
@@ -486,7 +505,6 @@ struct GameView: View {
             ZStack {
                 StarfieldBackground()
 
-                // Враги
                 ForEach(enemies) { e in
                     if let img = loader.enemy {
                         Image(uiImage: img)
@@ -497,7 +515,6 @@ struct GameView: View {
                     }
                 }
 
-                // Пули
                 ForEach(bullets) { b in
                     if let img = loader.bullet {
                         Image(uiImage: img)
@@ -513,7 +530,6 @@ struct GameView: View {
                     }
                 }
 
-                // Партнёр (в мультиплеере) — справа
                 if isMultiplayer, let hero = loader.hero {
                     Image(uiImage: hero)
                         .resizable().aspectRatio(contentMode: .fit)
@@ -523,7 +539,6 @@ struct GameView: View {
                         .shadow(color: .cyan.opacity(0.8), radius: 15)
                 }
 
-                // Своя птица — слева
                 if let hero = loader.hero {
                     Image(uiImage: hero)
                         .resizable().aspectRatio(contentMode: .fit)
@@ -533,7 +548,6 @@ struct GameView: View {
                         .shadow(color: .purple.opacity(0.8), radius: 15)
                 }
 
-                // HUD
                 VStack(spacing: 0) {
                     HStack(spacing: 10) {
                         Text("\(score)")
@@ -615,27 +629,22 @@ struct GameView: View {
               myHeroX: CGFloat, peerHeroX: CGFloat,
               enemySize: CGFloat, bulletSize: CGFloat) {
 
-        // Своя птица двигается в любом режиме
         heroY += (heroTargetY - heroY) * 0.2
         let minY = heroSize / 2 + 10
         let maxY = h - heroSize / 2 - 10
         if heroY < minY { heroY = minY }
         if heroY > maxY { heroY = maxY }
 
-        // ==== ГОСТЬ ====
         if isMultiplayer && !isHost {
-            // Отправляем свою Y хосту (40 раз/сек)
             netSendTimer += 1.0 / 60.0
             if netSendTimer >= 0.025 {
                 netSendTimer = 0
                 network?.sendClientY(heroY)
             }
 
-            // Плавная интерполяция партнёра — вместо мгновенного прыжка
             remoteHeroYTarget = network?.remoteHeroY ?? remoteHeroY
             remoteHeroY += (remoteHeroYTarget - remoteHeroY) * 0.35
 
-            // Применяем состояние от хоста
             if let net = network {
                 score = net.remoteScore
                 earnedCoins = net.remoteCoins
@@ -657,8 +666,6 @@ struct GameView: View {
             return
         }
 
-        // ==== ХОСТ или ОДИНОЧНАЯ ====
-        // Плавная интерполяция партнёра и у хоста
         if isMultiplayer {
             remoteHeroYTarget = network?.remoteHeroY ?? remoteHeroY
             remoteHeroY += (remoteHeroYTarget - remoteHeroY) * 0.35
@@ -692,7 +699,6 @@ struct GameView: View {
             }
         }
 
-        // Столкновения пуль
         var bulletsToRemove = Set<UUID>()
         var enemiesToRemove = Set<UUID>()
         for b in bullets {
@@ -711,7 +717,6 @@ struct GameView: View {
         bullets.removeAll { bulletsToRemove.contains($0.id) }
         enemies.removeAll { enemiesToRemove.contains($0.id) }
 
-        // Своя птица vs враги
         for e in enemies {
             let dx = abs(myHeroX - e.x)
             let dy2 = abs(heroY - e.y)
@@ -719,7 +724,6 @@ struct GameView: View {
                 triggerGameOver(); return
             }
         }
-        // Партнёр vs враги
         if isMultiplayer {
             for e in enemies {
                 let dx = abs(peerHeroX - e.x)
@@ -730,7 +734,6 @@ struct GameView: View {
             }
         }
 
-        // Хост отправляет состояние гостю (20 раз/сек)
         if isMultiplayer && isHost {
             netSendTimer += 1.0 / 60.0
             if netSendTimer >= 0.050 {
