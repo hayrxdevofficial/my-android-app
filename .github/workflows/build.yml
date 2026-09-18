@@ -15,6 +15,7 @@ jobs:
         mkdir -p CosmicSungarov
         cp ContentView.swift CosmicSungarov/ContentView.swift
         cp MyApp.swift CosmicSungarov/MyApp.swift
+        cp MultiplayerManager.swift CosmicSungarov/MultiplayerManager.swift
 
         cat << 'EOF' > CosmicSungarov/Info.plist
         <?xml version="1.0" encoding="UTF-8"?>
@@ -63,6 +64,13 @@ jobs:
                 <string>UIInterfaceOrientationLandscapeLeft</string>
                 <string>UIInterfaceOrientationLandscapeRight</string>
             </array>
+            <key>NSLocalNetworkUsageDescription</key>
+            <string>Cosmic Sungarov использует локальную сеть для игры с друзьями</string>
+            <key>NSBonjourServices</key>
+            <array>
+                <string>_cosmic-sngrv._tcp</string>
+                <string>_cosmic-sngrv._udp</string>
+            </array>
         </dict>
         </plist>
         EOF
@@ -91,6 +99,7 @@ jobs:
             sources:
               - MyApp.swift
               - ContentView.swift
+              - MultiplayerManager.swift
             info:
               path: Info.plist
             settings:
