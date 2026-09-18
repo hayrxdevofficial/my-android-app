@@ -122,20 +122,20 @@ struct ContentView: View {
         .alert("Хотите помочь игроку?", isPresented: $showInviteAlert) {
             Button("Да") {
                 if let peer = network.incomingInvite {
-                    network.respondToInvite(from: peer, accepted: true)
+                    network.respondToInvite(from: peer.id, accepted: true)
                     network.incomingInvite = nil
                     withAnimation(.easeInOut(duration: 0.3)) { screen = .game }
                 }
             }
             Button("Нет", role: .cancel) {
                 if let peer = network.incomingInvite {
-                    network.respondToInvite(from: peer, accepted: false)
+                    network.respondToInvite(from: peer.id, accepted: false)
                 }
                 network.incomingInvite = nil
             }
         } message: {
-            let peerName: String = network.incomingInvite ?? "Игрок"
-            Text(peerName + " приглашает вас в игру")
+            let inviteName: String = network.incomingInvite?.name ?? "Игрок"
+            Text(inviteName + " приглашает вас в игру")
         }
         .preferredColorScheme(.dark)
         .statusBarHidden(true)
@@ -307,7 +307,10 @@ struct FriendsView: View {
                 if network.isConnected { network.refreshPlayerList() }
             }
         }
-        .onDisappear { timer?.invalidate() }
+        .onDisappear {
+            timer?.invalidate()
+            timer = nil
+        }
     }
 
     private func header(topInset: CGFloat) -> some View {
@@ -352,8 +355,8 @@ struct FriendsView: View {
     private var playersList: some View {
         ScrollView {
             VStack(spacing: 10) {
-                ForEach(network.onlinePlayers, id: \.self) { playerID in
-                    playerRow(playerID: playerID)
+                ForEach(network.onlinePlayers) { player in
+                    playerRow(player: player)
                 }
                 if network.onlinePlayers.isEmpty {
                     emptyState
@@ -364,20 +367,20 @@ struct FriendsView: View {
         }
     }
 
-    private func playerRow(playerID: String) -> some View {
-        Button(action: { network.sendInvite(to: playerID) }) {
+    private func playerRow(player: PlayerInfo) -> some View {
+        Button(action: { network.sendInvite(to: player.id) }) {
             HStack(spacing: 14) {
                 ZStack {
                     Circle().fill(Color.purple.opacity(0.3)).frame(width: 44, height: 44)
                     Image(systemName: "person.fill").foregroundColor(.white)
                 }
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(playerID)
+                    Text(player.name)
                         .font(.system(size: 16, weight: .bold))
                         .foregroundColor(.white)
-                    Text("Нажмите, чтобы пригласить")
-                        .font(.system(size: 12))
-                        .foregroundColor(.white.opacity(0.6))
+                    Text("ID: \(player.id)")
+                        .font(.system(size: 11))
+                        .foregroundColor(.white.opacity(0.5))
                 }
                 Spacer()
                 Image(systemName: "paperplane.fill").foregroundColor(.blue)
