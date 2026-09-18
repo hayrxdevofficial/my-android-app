@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 // MARK: - Модели
 struct Bullet: Identifiable {
@@ -104,7 +105,10 @@ struct ContentView: View {
                 )
             }
         }
-        .onAppear { loader.load() }
+        .onAppear {
+            forceLandscape()
+            loader.load()
+        }
         .onChange(of: loader.loaded) { isLoaded in
             if isLoaded && screen == .loading {
                 withAnimation(.easeInOut(duration: 0.4)) { screen = .menu }
@@ -114,29 +118,54 @@ struct ContentView: View {
         .statusBarHidden(true)
         .persistentSystemOverlays(.hidden)
     }
+
+    // Принудительно поворачиваем в landscape
+    private func forceLandscape() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            if let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene {
+                scene.requestGeometryUpdate(.iOS(interfaceOrientations: .landscapeRight)) { _ in }
+                UIViewController.attemptRotationToDeviceOrientation()
+            }
+        }
+        // Повторная попытка через секунду, если первая не сработала
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+            if let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+               scene.interfaceOrientation == .portrait {
+                scene.requestGeometryUpdate(.iOS(interfaceOrientations: .landscapeRight)) { _ in }
+                UIViewController.attemptRotationToDeviceOrientation()
+            }
+        }
+    }
 }
 
 // MARK: - Загрузка
 struct LoadingView: View {
     @State private var spin = false
     var body: some View {
-        VStack(spacing: 24) {
+        GeometryReader { geo in
             ZStack {
-                Circle()
-                    .stroke(Color.purple.opacity(0.2), lineWidth: 4)
-                    .frame(width: 60, height: 60)
-                Circle()
-                    .trim(from: 0, to: 0.25)
-                    .stroke(Color.purple, style: StrokeStyle(lineWidth: 4, lineCap: .round))
-                    .frame(width: 60, height: 60)
-                    .rotationEffect(.degrees(spin ? 360 : 0))
-                    .animation(.linear(duration: 1).repeatForever(autoreverses: false), value: spin)
+                StarfieldBackground()
+                VStack(spacing: 24) {
+                    ZStack {
+                        Circle()
+                            .stroke(Color.purple.opacity(0.2), lineWidth: 4)
+                            .frame(width: 60, height: 60)
+                        Circle()
+                            .trim(from: 0, to: 0.25)
+                            .stroke(Color.purple, style: StrokeStyle(lineWidth: 4, lineCap: .round))
+                            .frame(width: 60, height: 60)
+                            .rotationEffect(.degrees(spin ? 360 : 0))
+                            .animation(.linear(duration: 1).repeatForever(autoreverses: false), value: spin)
+                    }
+                    Text("COSMIC SUNGAROV")
+                        .font(.system(size: 20, weight: .heavy, design: .rounded))
+                        .foregroundColor(.purple)
+                        .tracking(4)
+                }
+                .frame(width: geo.size.width, height: geo.size.height)
             }
-            Text("COSMIC SUNGAROV")
-                .font(.system(size: 20, weight: .heavy, design: .rounded))
-                .foregroundColor(.purple)
-                .tracking(4)
         }
+        .ignoresSafeArea()
         .onAppear { spin = true }
     }
 }
@@ -160,7 +189,7 @@ struct MenuView: View {
                             Image(uiImage: hero)
                                 .resizable()
                                 .aspectRatio(contentMode: .fit)
-                                .frame(width: geo.size.height * 0.65)
+                                .frame(width: geo.size.height * 0.55)
                                 .rotationEffect(.degrees(float ? 5 : -5))
                                 .offset(y: float ? -10 : 10)
                                 .shadow(color: .purple.opacity(0.8), radius: 25)
@@ -169,31 +198,31 @@ struct MenuView: View {
                     }
                     .frame(width: geo.size.width * 0.45)
 
-                    VStack(spacing: 14) {
-                        Spacer()
+                    VStack(spacing: 10) {
+                        Spacer(minLength: 0)
 
                         Text("COSMIC")
-                            .font(.system(size: geo.size.height * 0.16, weight: .heavy, design: .rounded))
+                            .font(.system(size: geo.size.height * 0.13, weight: .heavy, design: .rounded))
                             .foregroundColor(.white)
                             .shadow(color: .purple, radius: 25)
                             .tracking(5)
 
                         Text("SUNGAROV")
-                            .font(.system(size: geo.size.height * 0.13, weight: .heavy, design: .rounded))
+                            .font(.system(size: geo.size.height * 0.10, weight: .heavy, design: .rounded))
                             .foregroundColor(Color(red: 1.0, green: 0.85, blue: 0.24))
                             .shadow(color: Color(red: 1.0, green: 0.62, blue: 0.04), radius: 25)
                             .tracking(3)
 
-                        Spacer()
+                        Spacer(minLength: 0)
 
                         Button(action: onStart) {
                             HStack(spacing: 10) {
                                 Image(systemName: "play.fill")
                                 Text("ИГРАТЬ")
-                                    .font(.system(size: 22, weight: .heavy, design: .rounded))
+                                    .font(.system(size: 20, weight: .heavy, design: .rounded))
                             }
                             .foregroundColor(.white)
-                            .frame(width: 260, height: 60)
+                            .frame(width: geo.size.width * 0.35, height: 54)
                             .background(
                                 LinearGradient(
                                     colors: [Color(red: 0.42, green: 0.36, blue: 0.91),
@@ -201,34 +230,36 @@ struct MenuView: View {
                                     startPoint: .top, endPoint: .bottom
                                 )
                             )
-                            .cornerRadius(20)
-                            .shadow(color: .purple.opacity(0.7), radius: 25)
+                            .cornerRadius(18)
+                            .shadow(color: .purple.opacity(0.7), radius: 20)
                         }
                         .buttonStyle(.plain)
 
-                        HStack(spacing: 20) {
+                        HStack(spacing: 16) {
                             HStack(spacing: 6) {
                                 Image(systemName: "star.circle.fill")
                                     .foregroundColor(Color(red: 1.0, green: 0.85, blue: 0.24))
-                                Text("Рекорд: \(store.bestScore)")
-                                    .font(.system(size: 16, weight: .semibold))
+                                Text("\(store.bestScore)")
+                                    .font(.system(size: 15, weight: .semibold))
                                     .foregroundColor(.white.opacity(0.85))
                             }
                             HStack(spacing: 6) {
                                 Image(systemName: "dollarsign.circle.fill")
                                     .foregroundColor(Color(red: 1.0, green: 0.85, blue: 0.24))
                                 Text("\(store.coins)")
-                                    .font(.system(size: 16, weight: .semibold))
+                                    .font(.system(size: 15, weight: .semibold))
                                     .foregroundColor(.white.opacity(0.85))
                             }
                         }
-                        .padding(.top, 8)
-                        .padding(.bottom, geo.size.height * 0.08)
+                        .padding(.top, 6)
+
+                        Spacer(minLength: 0).frame(height: geo.size.height * 0.06)
                     }
                     .frame(width: geo.size.width * 0.55)
                 }
             }
         }
+        .ignoresSafeArea()
         .onAppear { float = true }
     }
 }
@@ -255,18 +286,19 @@ struct GameView: View {
     private let enemySizeRatio: CGFloat = 0.11
     private let bulletSizeRatio: CGFloat = 0.045
     private let bulletSpeedRatio: CGFloat = 1.10
-    private let baseEnemySpeed: CGFloat = 0.32
-    private let baseSpawnInterval: Double = 1.3
+    private let baseEnemySpeed: CGFloat = 0.30
+    private let baseSpawnInterval: Double = 1.4
+    private let minSpawnInterval: Double = 1.0   // минимум 1 секунда
     private let fireInterval: Double = 0.28
 
     let timer = Timer.publish(every: 1.0 / 60.0, on: .main, in: .common).autoconnect()
 
     // Динамическая сложность
     var enemySpeedMultiplier: CGFloat {
-        return 1.0 + min(CGFloat(score) * 0.012, 0.7) // +70% к скорости на 58 очках
+        return 1.0 + min(CGFloat(score) * 0.008, 0.5) // +50% максимум
     }
     var currentSpawnInterval: Double {
-        return max(0.35, baseSpawnInterval - Double(score) * 0.015)
+        return max(minSpawnInterval, baseSpawnInterval - Double(score) * 0.005)
     }
 
     var body: some View {
@@ -277,6 +309,12 @@ struct GameView: View {
             let heroX = w * 0.15
             let enemySize = w * enemySizeRatio
             let bulletSize = w * bulletSizeRatio
+
+            // Учёт safe area в landscape
+            let topInset = geo.safeAreaInsets.top
+            let leadingInset = geo.safeAreaInsets.leading
+            let trailingInset = geo.safeAreaInsets.trailing
+            let bottomInset = geo.safeAreaInsets.bottom
 
             ZStack {
                 StarfieldBackground()
@@ -323,58 +361,57 @@ struct GameView: View {
                 }
 
                 // HUD
-                VStack {
-                    HStack {
+                VStack(spacing: 0) {
+                    HStack(spacing: 10) {
                         // Счёт
-                        HStack(spacing: 8) {
-                            Text("\(score)")
-                                .font(.system(size: 36, weight: .heavy, design: .rounded))
-                                .foregroundColor(.white)
-                        }
-                        .padding(.horizontal, 18)
-                        .padding(.vertical, 8)
-                        .background(Color.black.opacity(0.5))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 20)
-                                .stroke(Color.purple.opacity(0.6), lineWidth: 1.5)
-                        )
-                        .cornerRadius(20)
-
-                        Spacer()
+                        Text("\(score)")
+                            .font(.system(size: 32, weight: .heavy, design: .rounded))
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 6)
+                            .background(Color.black.opacity(0.5))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 18)
+                                    .stroke(Color.purple.opacity(0.6), lineWidth: 1.5)
+                            )
+                            .cornerRadius(18)
 
                         // Монеты
-                        HStack(spacing: 8) {
+                        HStack(spacing: 6) {
                             Image(systemName: "star.circle.fill")
                                 .foregroundColor(Color(red: 1.0, green: 0.85, blue: 0.24))
                             Text("\(earnedCoins)")
-                                .font(.system(size: 22, weight: .heavy, design: .rounded))
+                                .font(.system(size: 20, weight: .heavy, design: .rounded))
                                 .foregroundColor(.white)
                         }
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 8)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 6)
                         .background(Color.black.opacity(0.5))
                         .overlay(
-                            RoundedRectangle(cornerRadius: 20)
+                            RoundedRectangle(cornerRadius: 18)
                                 .stroke(Color.purple.opacity(0.6), lineWidth: 1.5)
                         )
-                        .cornerRadius(20)
+                        .cornerRadius(18)
 
-                        // Домой (с сохранением очков)
+                        Spacer()
+
+                        // Домой — с учётом safe area справа
                         Button(action: exitGame) {
                             Image(systemName: "house.fill")
                                 .font(.system(size: 18, weight: .bold))
                                 .foregroundColor(.white)
-                                .padding(12)
+                                .padding(10)
                                 .background(Color.black.opacity(0.5))
                                 .clipShape(Circle())
                                 .overlay(
                                     Circle().stroke(Color.purple.opacity(0.6), lineWidth: 1.5)
                                 )
                         }
-                        .padding(.leading, 8)
                     }
-                    .padding(.horizontal, 20)
-                    .padding(.top, max(12, geo.safeAreaInsets.top + 4))
+                    .padding(.leading, max(16, leadingInset + 8))
+                    .padding(.trailing, max(16, trailingInset + 8))
+                    .padding(.top, max(8, topInset + 4))
+
                     Spacer()
                 }
             }
@@ -405,7 +442,6 @@ struct GameView: View {
               heroSize: CGFloat, heroX: CGFloat,
               enemySize: CGFloat, bulletSize: CGFloat) {
 
-        // Плавное движение героя
         let dy = heroTargetY - heroY
         heroY += dy * 0.2
         let minY = heroSize / 2 + 10
@@ -425,26 +461,26 @@ struct GameView: View {
         for i in bullets.indices { bullets[i].x += bSpeed / 60.0 }
         bullets.removeAll { $0.x > w + 30 }
 
-        // Враги — с учётом сложности
+        // Враги
         let eSpeed = w * baseEnemySpeed * enemySpeedMultiplier
         for i in enemies.indices { enemies[i].x -= eSpeed / 60.0 }
         enemies.removeAll { $0.x < -enemySize }
 
-        // Спавн — с учётом сложности
+        // Спавн
         spawnTimer += 1.0 / 60.0
         if spawnTimer >= currentSpawnInterval {
             spawnTimer = 0
             let y = CGFloat.random(in: enemySize/2...(h - enemySize/2))
             enemies.append(Enemy(x: w + enemySize, y: y, size: enemySize))
 
-            // На сложности иногда спавним сразу двоих
-            if score >= 25 && Bool.random() {
+            // Двойной спавн только после 40 очков
+            if score >= 40 && Bool.random() {
                 let y2 = CGFloat.random(in: enemySize/2...(h - enemySize/2))
                 enemies.append(Enemy(x: w + enemySize * 2, y: y2, size: enemySize))
             }
         }
 
-        // Столкновения: пуля → враг
+        // Пуля → враг
         var bulletsToRemove = Set<UUID>()
         var enemiesToRemove = Set<UUID>()
         for b in bullets {
@@ -463,7 +499,7 @@ struct GameView: View {
         bullets.removeAll { bulletsToRemove.contains($0.id) }
         enemies.removeAll { enemiesToRemove.contains($0.id) }
 
-        // Столкновение героя с врагом
+        // Герой → враг
         for e in enemies {
             let dx = abs(heroX - e.x)
             let dy2 = abs(heroY - e.y)
@@ -505,15 +541,15 @@ struct GameOverView: View {
             ZStack {
                 StarfieldBackground()
 
-                VStack(spacing: 12) {
+                VStack(spacing: 8) {
                     Text("ИГРА ОКОНЧЕНА")
-                        .font(.system(size: geo.size.height * 0.09, weight: .heavy, design: .rounded))
+                        .font(.system(size: geo.size.height * 0.08, weight: .heavy, design: .rounded))
                         .foregroundColor(.white)
                         .shadow(color: .purple, radius: 20)
                         .tracking(3)
 
                     Text("\(score)")
-                        .font(.system(size: geo.size.height * 0.18, weight: .heavy, design: .rounded))
+                        .font(.system(size: geo.size.height * 0.16, weight: .heavy, design: .rounded))
                         .foregroundColor(Color(red: 1.0, green: 0.85, blue: 0.24))
                         .shadow(color: Color(red: 1.0, green: 0.62, blue: 0.04), radius: 20)
 
@@ -521,17 +557,17 @@ struct GameOverView: View {
                         Image(systemName: "star.circle.fill")
                             .foregroundColor(Color(red: 1.0, green: 0.85, blue: 0.24))
                         Text("+\(coins) монет")
-                            .font(.system(size: 18, weight: .bold))
+                            .font(.system(size: 16, weight: .bold))
                             .foregroundColor(Color(red: 1.0, green: 0.85, blue: 0.24))
                     }
 
                     if isRecord {
                         Text("🏆 НОВЫЙ РЕКОРД!")
-                            .font(.system(size: 16, weight: .heavy))
+                            .font(.system(size: 14, weight: .heavy))
                             .foregroundColor(Color(red: 1.0, green: 0.85, blue: 0.24))
                     } else {
                         Text("Рекорд: \(store.bestScore)")
-                            .font(.system(size: 14))
+                            .font(.system(size: 13))
                             .foregroundColor(.white.opacity(0.7))
                     }
 
@@ -539,10 +575,10 @@ struct GameOverView: View {
                         HStack(spacing: 8) {
                             Image(systemName: "arrow.clockwise")
                             Text("ИГРАТЬ СНОВА")
-                                .font(.system(size: 18, weight: .heavy, design: .rounded))
+                                .font(.system(size: 16, weight: .heavy, design: .rounded))
                         }
                         .foregroundColor(.white)
-                        .frame(width: 240, height: 54)
+                        .frame(width: 220, height: 48)
                         .background(
                             LinearGradient(
                                 colors: [Color(red: 0.42, green: 0.36, blue: 0.91),
@@ -550,29 +586,30 @@ struct GameOverView: View {
                                 startPoint: .top, endPoint: .bottom
                             )
                         )
-                        .cornerRadius(16)
+                        .cornerRadius(14)
                         .shadow(color: .purple.opacity(0.7), radius: 20)
                     }
                     .buttonStyle(.plain)
-                    .padding(.top, 10)
+                    .padding(.top, 8)
 
                     Button(action: onMenu) {
                         Text("В МЕНЮ")
-                            .font(.system(size: 14, weight: .semibold))
+                            .font(.system(size: 13, weight: .semibold))
                             .foregroundColor(.white.opacity(0.7))
                             .underline()
                     }
                 }
-                .padding(30)
+                .padding(24)
                 .background(Color.black.opacity(0.6))
-                .cornerRadius(24)
+                .cornerRadius(22)
                 .overlay(
-                    RoundedRectangle(cornerRadius: 24)
+                    RoundedRectangle(cornerRadius: 22)
                         .stroke(Color.purple.opacity(0.7), lineWidth: 2)
                 )
-                .padding(40)
+                .padding(30)
             }
         }
+        .ignoresSafeArea()
     }
 }
 
@@ -591,7 +628,6 @@ struct StarfieldBackground: View {
                     startRadius: 0,
                     endRadius: max(geo.size.width, geo.size.height)
                 )
-                .ignoresSafeArea()
 
                 ForEach(0..<60, id: \.self) { i in
                     let x = CGFloat((i * 137) % Int(geo.size.width))
@@ -604,6 +640,7 @@ struct StarfieldBackground: View {
                 }
             }
         }
+        .ignoresSafeArea()
     }
 }
 
