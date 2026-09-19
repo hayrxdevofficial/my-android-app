@@ -69,7 +69,6 @@ struct ContentView: View {
 
     var body: some View {
         ZStack {
-            // Фон приложения на весь экран
             Color(red: 0.043, green: 0.059, blue: 0.165)
                 .ignoresSafeArea()
 
@@ -144,6 +143,26 @@ struct ContentView: View {
                         withAnimation(.easeInOut(duration: 0.25)) { screen = .menu }
                     }
                 )
+            }
+
+            // === ERROR OVERLAYS ===
+            if screen != .loading {
+                if !network.hasInternet {
+                    NoInternetView(onRetry: {
+                        network.retry()
+                    })
+                    .transition(.opacity)
+                    .zIndex(100)
+                } else if network.serverDown {
+                    ServerErrorView(onRestart: {
+                        network.retry()
+                        if screen == .friends {
+                            withAnimation(.easeInOut(duration: 0.25)) { screen = .menu }
+                        }
+                    })
+                    .transition(.opacity)
+                    .zIndex(100)
+                }
             }
         }
         .onAppear {
@@ -268,7 +287,6 @@ struct MenuView: View {
             ZStack {
                 StarfieldBackground()
 
-                // Кнопка Аккаунт в левом верхнем углу
                 VStack {
                     HStack {
                         Button(action: onAccount) {
@@ -398,7 +416,6 @@ struct AccountView: View {
                 StarfieldBackground()
 
                 VStack(spacing: 14) {
-                    // Верхняя панель
                     HStack {
                         Button(action: onBack) {
                             Image(systemName: "chevron.left")
@@ -420,7 +437,6 @@ struct AccountView: View {
 
                     Spacer()
 
-                    // Если авторизован — профиль
                     if network.isAuthenticated {
                         VStack(spacing: 14) {
                             Image(systemName: "checkmark.seal.fill")
@@ -461,9 +477,7 @@ struct AccountView: View {
                             }
                             .padding(.top, 10)
 
-                            Button(action: {
-                                network.logout()
-                            }) {
+                            Button(action: { network.logout() }) {
                                 Text("Выйти из аккаунта")
                                     .font(.system(size: 14, weight: .semibold))
                                     .foregroundColor(.red)
@@ -479,9 +493,7 @@ struct AccountView: View {
                         .cornerRadius(24)
                         .overlay(RoundedRectangle(cornerRadius: 24).stroke(Color.green.opacity(0.5), lineWidth: 2))
                     }
-                    // Иначе — формы регистрации/входа
                     else if !network.isConnected {
-                        // Загрузка сервера
                         VStack(spacing: 16) {
                             ProgressView().scaleEffect(1.5).tint(.purple)
                             Text("Загрузка сервера…")
@@ -504,7 +516,6 @@ struct AccountView: View {
                         .background(Color.black.opacity(0.4))
                         .cornerRadius(24)
                     } else {
-                        // Подключён — показываем формы в ScrollView
                         ScrollView {
                             VStack(spacing: 12) {
                                 Text(showSuccess ? "Вы зарегистрировались!" :
@@ -565,7 +576,7 @@ struct AccountView: View {
                             }
                             .padding(30)
                         }
-                        .frame(width: geo.size.width * 0.6, height: geo.size.height * 0.7) // Ограничиваем размер ScrollView
+                        .frame(width: geo.size.width * 0.6, height: geo.size.height * 0.7)
                         .background(Color.black.opacity(0.4))
                         .cornerRadius(24)
                         .overlay(RoundedRectangle(cornerRadius: 24).stroke(Color.purple.opacity(0.5), lineWidth: 2))
@@ -1125,6 +1136,125 @@ struct StarfieldBackground: View {
             }
         }
         .ignoresSafeArea()
+    }
+}
+
+// MARK: - Экран "Нет интернета"
+struct NoInternetView: View {
+    let onRetry: () -> Void
+    @State private var rotate = false
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.95).ignoresSafeArea()
+
+            VStack(spacing: 20) {
+                ZStack {
+                    Circle()
+                        .fill(Color.red.opacity(0.15))
+                        .frame(width: 130, height: 130)
+                    Image(systemName: "wifi.slash")
+                        .font(.system(size: 60))
+                        .foregroundColor(.red)
+                }
+
+                Text("Нет соединения с интернетом")
+                    .font(.system(size: 22, weight: .heavy, design: .rounded))
+                    .foregroundColor(.white)
+                    .multilineTextAlignment(.center)
+
+                Text("Проверьте Wi-Fi или мобильные данные")
+                    .font(.system(size: 14))
+                    .foregroundColor(.white.opacity(0.7))
+                    .multilineTextAlignment(.center)
+
+                Button(action: {
+                    rotate = true
+                    onRetry()
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
+                        rotate = false
+                    }
+                }) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "arrow.clockwise")
+                            .rotationEffect(.degrees(rotate ? 360 : 0))
+                            .animation(.linear(duration: 0.6), value: rotate)
+                        Text("Повторить")
+                            .font(.system(size: 17, weight: .bold))
+                    }
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 34)
+                    .padding(.vertical, 14)
+                    .background(
+                        LinearGradient(
+                            colors: [Color(red: 0.42, green: 0.36, blue: 0.91),
+                                     Color(red: 0.29, green: 0.23, blue: 0.71)],
+                            startPoint: .top, endPoint: .bottom
+                        )
+                    )
+                    .cornerRadius(16)
+                    .shadow(color: .purple.opacity(0.6), radius: 15)
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(40)
+        }
+    }
+}
+
+// MARK: - Экран "Технические неполадки"
+struct ServerErrorView: View {
+    let onRestart: () -> Void
+    @State private var pulse = false
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.95).ignoresSafeArea()
+
+            VStack(spacing: 20) {
+                ZStack {
+                    Circle()
+                        .fill(Color.orange.opacity(0.15))
+                        .frame(width: 130, height: 130)
+                        .scaleEffect(pulse ? 1.1 : 1.0)
+                        .animation(.easeInOut(duration: 1).repeatForever(autoreverses: true), value: pulse)
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 60))
+                        .foregroundColor(.orange)
+                }
+
+                Text("Технические неполадки")
+                    .font(.system(size: 24, weight: .heavy, design: .rounded))
+                    .foregroundColor(.white)
+
+                Text("Сервер временно недоступен.\nПопробуйте позже.")
+                    .font(.system(size: 14))
+                    .foregroundColor(.white.opacity(0.7))
+                    .multilineTextAlignment(.center)
+
+                Button(action: onRestart) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "arrow.clockwise")
+                        Text("Перезагрузить игру")
+                            .font(.system(size: 16, weight: .bold))
+                    }
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 28)
+                    .padding(.vertical, 14)
+                    .background(
+                        LinearGradient(
+                            colors: [Color.orange, Color.red.opacity(0.8)],
+                            startPoint: .top, endPoint: .bottom
+                        )
+                    )
+                    .cornerRadius(16)
+                    .shadow(color: .orange.opacity(0.6), radius: 15)
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(40)
+        }
+        .onAppear { pulse = true }
     }
 }
 
