@@ -52,7 +52,29 @@ final class ImageLoader: ObservableObject {
 }
 
 // MARK: - Экраны
-enum AppScreen { case loading, menu, account, friends, game, gameOver }
+enum AppScreen { case loading, menu, account, friends, leaderboard, game, gameOver }
+
+// MARK: - Общая вью для имени с галочкой
+struct VerifiedName: View {
+    let name: String
+    let verified: Bool
+    var fontSize: CGFloat = 15
+    var fontWeight: Font.Weight = .bold
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Text(name)
+                .font(.system(size: fontSize, weight: fontWeight))
+                .foregroundColor(.white)
+            if verified {
+                Image(systemName: "checkmark.seal.fill")
+                    .font(.system(size: fontSize * 0.9, weight: .bold))
+                    .foregroundColor(.blue)
+                    .shadow(color: .blue.opacity(0.6), radius: 3)
+            }
+        }
+    }
+}
 
 // MARK: - Корень
 struct ContentView: View {
@@ -66,6 +88,7 @@ struct ContentView: View {
     @State private var showInviteAlert = false
     @State private var showAuthNeededAlert = false
     @State private var multiplayerGame = false
+    @State private var profileUsername: String? = nil
 
     var body: some View {
         ZStack {
@@ -80,6 +103,7 @@ struct ContentView: View {
                     loader: loader,
                     store: store,
                     isAuthenticated: network.isAuthenticated,
+                    isVerified: network.isVerified,
                     onStart: {
                         multiplayerGame = false
                         withAnimation(.easeInOut(duration: 0.25)) { screen = .game }
@@ -89,6 +113,14 @@ struct ContentView: View {
                             showAuthNeededAlert = true
                         } else {
                             withAnimation(.easeInOut(duration: 0.25)) { screen = .friends }
+                        }
+                    },
+                    onLeaderboard: {
+                        if !network.isAuthenticated {
+                            showAuthNeededAlert = true
+                        } else {
+                            network.getLeaderboard()
+                            withAnimation(.easeInOut(duration: 0.25)) { screen = .leaderboard }
                         }
                     },
                     onAccount: {
@@ -109,6 +141,19 @@ struct ContentView: View {
                     onBack: {
                         network.disconnect()
                         withAnimation(.easeInOut(duration: 0.25)) { screen = .menu }
+                    },
+                    onOpenProfile: { username in
+                        openProfile(username: username)
+                    }
+                )
+            case .leaderboard:
+                LeaderboardView(
+                    network: network,
+                    onBack: {
+                        withAnimation(.easeInOut(duration: 0.25)) { screen = .menu }
+                    },
+                    onOpenProfile: { username in
+                        openProfile(username: username)
                     }
                 )
             case .game:
@@ -148,15 +193,13 @@ struct ContentView: View {
             // === ERROR OVERLAYS ===
             if screen != .loading {
                 if !network.hasInternet {
-                    NoInternetView(onRetry: {
-                        network.retry()
-                    })
-                    .transition(.opacity)
-                    .zIndex(100)
+                    NoInternetView(onRetry: { network.retry() })
+                        .transition(.opacity)
+                        .zIndex(100)
                 } else if network.serverDown {
                     ServerErrorView(onRestart: {
                         network.retry()
-                        if screen == .friends {
+                        if screen == .friends || screen == .leaderboard {
                             withAnimation(.easeInOut(duration: 0.25)) { screen = .menu }
                         }
                     })
@@ -164,6 +207,12 @@ struct ContentView: View {
                     .zIndex(100)
                 }
             }
+        }
+        .sheet(item: Binding(
+            get: { profileUsername.map { ProfileSheetItem(username: $0) } },
+            set: { if $0 == nil { profileUsername = nil } }
+        )) { item in
+            ProfileSheet(network: network, username: item.username)
         }
         .onAppear {
             forceLandscape()
@@ -180,7 +229,7 @@ struct ContentView: View {
         }
         .onChange(of: screen) { newScreen in
             switch newScreen {
-            case .loading, .menu, .account, .friends:
+            case .loading, .menu, .account, .friends, .leaderboard:
                 music.playMenu()
             case .game:
                 music.playGame()
@@ -201,14 +250,10 @@ struct ContentView: View {
             }
         }
         .onChange(of: network.serverBest) { newBest in
-            if store.bestScore != newBest {
-                store.bestScore = newBest
-            }
+            if store.bestScore != newBest { store.bestScore = newBest }
         }
         .onChange(of: network.serverCoins) { newCoins in
-            if store.coins != newCoins {
-                store.coins = newCoins
-            }
+            if store.coins != newCoins { store.coins = newCoins }
         }
         .alert("Хотите помочь игроку?", isPresented: $showInviteAlert) {
             Button("Да") {
@@ -235,11 +280,16 @@ struct ContentView: View {
             }
             Button("Позже", role: .cancel) {}
         } message: {
-            Text("Чтобы играть с друзьями, войдите в аккаунт. Это защита для безопасности.")
+            Text("Чтобы играть с друзьями и смотреть лидеров, войдите в аккаунт.")
         }
         .preferredColorScheme(.dark)
         .statusBarHidden(true)
         .persistentSystemOverlays(.hidden)
+    }
+
+    private func openProfile(username: String) {
+        network.getProfile(username: username)
+        profileUsername = username
     }
 
     private func forceLandscape() {
@@ -255,6 +305,12 @@ struct ContentView: View {
             }
         }
     }
+}
+
+// Обёртка для sheet(item:)
+struct ProfileSheetItem: Identifiable {
+    let username: String
+    var id: String { username }
 }
 
 // MARK: - Загрузка
@@ -290,8 +346,10 @@ struct MenuView: View {
     @ObservedObject var loader: ImageLoader
     @ObservedObject var store: GameStore
     let isAuthenticated: Bool
+    let isVerified: Bool
     let onStart: () -> Void
     let onFriends: () -> Void
+    let onLeaderboard: () -> Void
     let onAccount: () -> Void
     @State private var float = false
 
@@ -300,6 +358,7 @@ struct MenuView: View {
             ZStack {
                 StarfieldBackground()
 
+                // ===== Кнопка Аккаунт (левый верх) =====
                 VStack {
                     HStack {
                         Button(action: onAccount) {
@@ -308,6 +367,11 @@ struct MenuView: View {
                                     .font(.system(size: 16, weight: .bold))
                                 Text("Аккаунт")
                                     .font(.system(size: 13, weight: .bold))
+                                if isAuthenticated && isVerified {
+                                    Image(systemName: "checkmark.seal.fill")
+                                        .font(.system(size: 13, weight: .bold))
+                                        .foregroundColor(.blue)
+                                }
                             }
                             .foregroundColor(isAuthenticated ? .green : .white)
                             .padding(.horizontal, 14).padding(.vertical, 10)
@@ -325,7 +389,9 @@ struct MenuView: View {
                     Spacer()
                 }
 
+                // ===== Основной контент =====
                 HStack(spacing: 0) {
+                    // Герой
                     ZStack {
                         if let hero = loader.hero {
                             Image(uiImage: hero)
@@ -339,8 +405,10 @@ struct MenuView: View {
                     }
                     .frame(width: geo.size.width * 0.45)
 
+                    // Правая часть — заголовок и кнопки
                     VStack(spacing: 10) {
                         Spacer(minLength: 0)
+
                         Text("COSMIC")
                             .font(.system(size: geo.size.height * 0.13, weight: .heavy, design: .rounded))
                             .foregroundColor(.white).shadow(color: .purple, radius: 25).tracking(5)
@@ -348,8 +416,10 @@ struct MenuView: View {
                             .font(.system(size: geo.size.height * 0.10, weight: .heavy, design: .rounded))
                             .foregroundColor(Color(red: 1.0, green: 0.85, blue: 0.24))
                             .shadow(color: Color(red: 1.0, green: 0.62, blue: 0.04), radius: 25).tracking(3)
+
                         Spacer(minLength: 0)
 
+                        // Играть + Друзья + Лидеры
                         HStack(spacing: 12) {
                             Button(action: onStart) {
                                 HStack(spacing: 10) {
@@ -357,7 +427,7 @@ struct MenuView: View {
                                     Text("ИГРАТЬ").font(.system(size: 20, weight: .heavy, design: .rounded))
                                 }
                                 .foregroundColor(.white)
-                                .frame(width: geo.size.width * 0.28, height: 54)
+                                .frame(width: geo.size.width * 0.26, height: 54)
                                 .background(LinearGradient(
                                     colors: [Color(red: 0.42, green: 0.36, blue: 0.91),
                                              Color(red: 0.29, green: 0.23, blue: 0.71)],
@@ -384,8 +454,27 @@ struct MenuView: View {
                                 .shadow(color: (isAuthenticated ? Color.blue : Color.gray).opacity(0.6), radius: 15)
                             }
                             .buttonStyle(.plain)
+
+                            Button(action: onLeaderboard) {
+                                VStack(spacing: 2) {
+                                    Image(systemName: isAuthenticated ? "trophy.fill" : "lock.fill")
+                                        .font(.system(size: 20))
+                                    Text("Лидеры").font(.system(size: 11, weight: .bold))
+                                }
+                                .foregroundColor(.white)
+                                .frame(width: 70, height: 54)
+                                .background(LinearGradient(
+                                    colors: isAuthenticated ?
+                                        [Color(red: 1.0, green: 0.72, blue: 0.15), Color(red: 0.85, green: 0.45, blue: 0.05)] :
+                                        [Color.gray.opacity(0.6), Color.gray.opacity(0.4)],
+                                    startPoint: .top, endPoint: .bottom))
+                                .cornerRadius(18)
+                                .shadow(color: (isAuthenticated ? Color.orange : Color.gray).opacity(0.6), radius: 15)
+                            }
+                            .buttonStyle(.plain)
                         }
 
+                        // Рекорд / Монеты
                         HStack(spacing: 16) {
                             HStack(spacing: 6) {
                                 Image(systemName: "star.circle.fill")
@@ -401,6 +490,7 @@ struct MenuView: View {
                             }
                         }
                         .padding(.top, 6)
+
                         Spacer(minLength: 0).frame(height: geo.size.height * 0.06)
                     }
                     .frame(width: geo.size.width * 0.55)
@@ -422,6 +512,10 @@ struct AccountView: View {
     @State private var username = ""
     @State private var password = ""
     @State private var showSuccess = false
+    @State private var isSending = false
+    @FocusState private var focusField: Field?
+
+    enum Field { case username, password }
 
     var body: some View {
         GeometryReader { geo in
@@ -429,6 +523,7 @@ struct AccountView: View {
                 StarfieldBackground()
 
                 VStack(spacing: 14) {
+                    // Шапка
                     HStack {
                         Button(action: onBack) {
                             Image(systemName: "chevron.left")
@@ -460,9 +555,17 @@ struct AccountView: View {
                                 .font(.system(size: 24, weight: .heavy, design: .rounded))
                                 .foregroundColor(.white)
 
-                            Text(network.displayName)
-                                .font(.system(size: 18, weight: .bold))
-                                .foregroundColor(.cyan)
+                            HStack(spacing: 6) {
+                                Text(network.displayName)
+                                    .font(.system(size: 18, weight: .bold))
+                                    .foregroundColor(.cyan)
+                                if network.isVerified {
+                                    Image(systemName: "checkmark.seal.fill")
+                                        .font(.system(size: 18, weight: .bold))
+                                        .foregroundColor(.blue)
+                                        .shadow(color: .blue.opacity(0.7), radius: 5)
+                                }
+                            }
 
                             HStack(spacing: 30) {
                                 VStack(spacing: 4) {
@@ -514,7 +617,7 @@ struct AccountView: View {
                                 .foregroundColor(.white.opacity(0.85))
                             if let err = network.connectionError {
                                 Text(err).font(.system(size: 13)).foregroundColor(.red)
-                                Button(action: { network.connect() }) {
+                                Button(action: { network.retry() }) {
                                     Text("Повторить")
                                         .font(.system(size: 14, weight: .bold))
                                         .foregroundColor(.white)
@@ -528,9 +631,10 @@ struct AccountView: View {
                         .padding(40)
                         .background(Color.black.opacity(0.4))
                         .cornerRadius(24)
-                    } else {
+                    }
+                    else {
                         ScrollView {
-                            VStack(spacing: 12) {
+                            VStack(spacing: 14) {
                                 Text(showSuccess ? "Вы зарегистрировались!" :
                                      (isRegisterMode ? "Хотите создать аккаунт?" : "Вход в аккаунт"))
                                     .font(.system(size: 20, weight: .heavy, design: .rounded))
@@ -540,46 +644,87 @@ struct AccountView: View {
                                     TextField("Имя (3-20 символов)", text: $username)
                                         .textInputAutocapitalization(.never)
                                         .autocorrectionDisabled(true)
+                                        .textContentType(.username)
+                                        .focused($focusField, equals: .username)
+                                        .submitLabel(.next)
+                                        .onSubmit { focusField = .password }
                                         .padding(14)
                                         .background(Color.white.opacity(0.1))
                                         .cornerRadius(14)
                                         .foregroundColor(.white)
                                         .frame(width: geo.size.width * 0.45)
+                                        .overlay(
+                                            RoundedRectangle(cornerRadius: 14)
+                                                .stroke(focusField == .username ? Color.cyan : Color.clear, lineWidth: 1.5)
+                                        )
 
                                     SecureField("Пароль (минимум 4)", text: $password)
+                                        .textContentType(.password)
+                                        .focused($focusField, equals: .password)
+                                        .submitLabel(.go)
+                                        .onSubmit { sendAuthRequest() }
                                         .padding(14)
                                         .background(Color.white.opacity(0.1))
                                         .cornerRadius(14)
                                         .foregroundColor(.white)
                                         .frame(width: geo.size.width * 0.45)
+                                        .overlay(
+                                            RoundedRectangle(cornerRadius: 14)
+                                                .stroke(focusField == .password ? Color.cyan : Color.clear, lineWidth: 1.5)
+                                        )
 
                                     if let err = network.authError {
-                                        Text(err).font(.system(size: 13)).foregroundColor(.red)
+                                        Text(err)
+                                            .font(.system(size: 13, weight: .semibold))
+                                            .foregroundColor(.red)
+                                            .multilineTextAlignment(.center)
                                             .frame(width: geo.size.width * 0.45)
                                     }
 
-                                    Button(action: {
-                                        if isRegisterMode {
-                                            network.register(username: username, password: password)
-                                        } else {
-                                            network.login(username: username, password: password)
+                                    if let err = network.connectionError {
+                                        Text("⚠️ \(err)")
+                                            .font(.system(size: 12, weight: .semibold))
+                                            .foregroundColor(.orange)
+                                            .multilineTextAlignment(.center)
+                                            .frame(width: geo.size.width * 0.45)
+                                    }
+
+                                    HStack(spacing: 6) {
+                                        Circle()
+                                            .fill(network.isConnected ? Color.green : Color.red)
+                                            .frame(width: 8, height: 8)
+                                        Text(network.isConnected ? "Сервер подключён" : "Нет соединения с сервером")
+                                            .font(.system(size: 11))
+                                            .foregroundColor(.white.opacity(0.6))
+                                    }
+
+                                    Button(action: sendAuthRequest) {
+                                        HStack(spacing: 8) {
+                                            if isSending {
+                                                ProgressView().tint(.white).scaleEffect(0.8)
+                                            }
+                                            Text(isSending ? "Отправка…" :
+                                                 (isRegisterMode ? "Создать аккаунт" : "Войти"))
+                                                .font(.system(size: 17, weight: .bold))
                                         }
-                                    }) {
-                                        Text(isRegisterMode ? "Создать аккаунт" : "Войти")
-                                            .font(.system(size: 17, weight: .bold))
-                                            .foregroundColor(.white)
-                                            .frame(width: geo.size.width * 0.45, height: 50)
-                                            .background(LinearGradient(
-                                                colors: [Color(red: 0.42, green: 0.36, blue: 0.91),
-                                                         Color(red: 0.29, green: 0.23, blue: 0.71)],
-                                                startPoint: .top, endPoint: .bottom))
-                                            .cornerRadius(14)
-                                            .shadow(color: .purple.opacity(0.6), radius: 20)
+                                        .foregroundColor(.white)
+                                        .frame(width: geo.size.width * 0.45, height: 50)
+                                        .background(LinearGradient(
+                                            colors: [Color(red: 0.42, green: 0.36, blue: 0.91),
+                                                     Color(red: 0.29, green: 0.23, blue: 0.71)],
+                                            startPoint: .top, endPoint: .bottom))
+                                        .cornerRadius(14)
+                                        .shadow(color: .purple.opacity(0.6), radius: 15)
+                                        .opacity(isSending ? 0.6 : 1.0)
                                     }
                                     .buttonStyle(.plain)
-                                    .disabled(username.count < 3 || password.count < 4)
+                                    .disabled(isSending)
 
-                                    Button(action: { isRegisterMode.toggle(); network.authError = nil }) {
+                                    Button(action: {
+                                        isRegisterMode.toggle()
+                                        network.authError = nil
+                                        focusField = nil
+                                    }) {
                                         Text(isRegisterMode ? "Уже есть аккаунт? Войти" : "Нет аккаунта? Создать")
                                             .font(.system(size: 13, weight: .semibold))
                                             .foregroundColor(.cyan)
@@ -589,7 +734,7 @@ struct AccountView: View {
                             }
                             .padding(30)
                         }
-                        .frame(width: geo.size.width * 0.6, height: geo.size.height * 0.7)
+                        .frame(width: geo.size.width * 0.6, height: geo.size.height * 0.75)
                         .background(Color.black.opacity(0.4))
                         .cornerRadius(24)
                         .overlay(RoundedRectangle(cornerRadius: 24).stroke(Color.purple.opacity(0.5), lineWidth: 2))
@@ -604,12 +749,36 @@ struct AccountView: View {
             if !network.isConnected { network.connect() }
         }
         .onChange(of: network.isAuthenticated) { authed in
+            isSending = false
             if authed {
                 showSuccess = true
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-                    showSuccess = false
-                }
+                focusField = nil
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { showSuccess = false }
             }
+        }
+        .onChange(of: network.authError) { err in
+            if err != nil { isSending = false }
+        }
+    }
+
+    private func sendAuthRequest() {
+        guard !isSending else { return }
+        guard network.isConnected else {
+            network.authError = "Подключение к серверу…"
+            return
+        }
+        focusField = nil
+        isSending = true
+        network.authError = nil
+
+        if isRegisterMode {
+            network.register(username: username, password: password)
+        } else {
+            network.login(username: username, password: password)
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 8) {
+            if isSending { isSending = false }
         }
     }
 }
@@ -618,6 +787,7 @@ struct AccountView: View {
 struct FriendsView: View {
     @ObservedObject var network: NetworkManager
     let onBack: () -> Void
+    let onOpenProfile: (String) -> Void
     @State private var timer: Timer?
 
     var body: some View {
@@ -634,6 +804,7 @@ struct FriendsView: View {
         .ignoresSafeArea()
         .onAppear {
             network.connect()
+            network.refreshPlayerList()
             timer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { _ in
                 if network.isConnected { network.refreshPlayerList() }
             }
@@ -698,33 +869,49 @@ struct FriendsView: View {
         }
     }
 
+    // Строка игрока с контекстным меню (как правый клик в Windows)
     private func playerRow(player: PlayerInfo) -> some View {
-        Button(action: { network.sendInvite(to: player.id) }) {
-            HStack(spacing: 14) {
-                ZStack {
-                    Circle().fill(Color.purple.opacity(0.3)).frame(width: 44, height: 44)
-                    Image(systemName: "person.fill").foregroundColor(.white)
-                }
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(player.name)
-                        .font(.system(size: 15, weight: .bold))
-                        .foregroundColor(.white)
-                    Text("Нажмите, чтобы пригласить")
-                        .font(.system(size: 11))
-                        .foregroundColor(.white.opacity(0.5))
-                }
-                Spacer()
-                Image(systemName: "paperplane.fill").foregroundColor(.blue)
+        let cleanName = extractUsername(from: player.name)
+
+        return HStack(spacing: 14) {
+            ZStack {
+                Circle().fill(Color.purple.opacity(0.3)).frame(width: 44, height: 44)
+                Image(systemName: "person.fill").foregroundColor(.white)
             }
-            .padding(12)
-            .background(Color.white.opacity(0.06))
-            .cornerRadius(14)
-            .overlay(
-                RoundedRectangle(cornerRadius: 14)
-                    .stroke(Color.purple.opacity(0.4), lineWidth: 1)
-            )
+            VStack(alignment: .leading, spacing: 2) {
+                VerifiedName(name: cleanName, verified: player.verified, fontSize: 16, fontWeight: .bold)
+                Text("Нажмите ⋯ для действий")
+                    .font(.system(size: 11))
+                    .foregroundColor(.white.opacity(0.5))
+            }
+            Spacer()
+
+            // Контекстное меню — три точки
+            Menu {
+                Button {
+                    network.sendInvite(to: player.id)
+                } label: {
+                    Label("Пригласить в игру", systemImage: "paperplane.fill")
+                }
+                Button {
+                    onOpenProfile(cleanName)
+                } label: {
+                    Label("Профиль", systemImage: "person.text.rectangle")
+                }
+            } label: {
+                Image(systemName: "ellipsis.circle.fill")
+                    .font(.system(size: 26))
+                    .foregroundColor(.blue)
+                    .padding(6)
+            }
         }
-        .buttonStyle(.plain)
+        .padding(12)
+        .background(Color.white.opacity(0.06))
+        .cornerRadius(14)
+        .overlay(
+            RoundedRectangle(cornerRadius: 14)
+                .stroke(player.verified ? Color.blue.opacity(0.6) : Color.purple.opacity(0.4), lineWidth: 1)
+        )
     }
 
     private var emptyState: some View {
@@ -741,6 +928,308 @@ struct FriendsView: View {
                 .padding(.horizontal, 30)
         }
         .padding(.top, 40)
+    }
+
+    // "PlayerHayrX_Dev (HayrX_Dev_1)" → "HayrX_Dev"
+    private func extractUsername(from display: String) -> String {
+        if let openParen = display.firstIndex(of: "("),
+           let closeParen = display.firstIndex(of: ")") {
+            let inner = display[display.index(after: openParen)..<closeParen]
+            if let underscore = inner.lastIndex(of: "_") {
+                return String(inner[..<underscore])
+            }
+            return String(inner)
+        }
+        return display
+    }
+}
+
+// MARK: - Лидерборд
+struct LeaderboardView: View {
+    @ObservedObject var network: NetworkManager
+    let onBack: () -> Void
+    let onOpenProfile: (String) -> Void
+    @State private var refreshTimer: Timer?
+
+    var body: some View {
+        GeometryReader { geo in
+            ZStack {
+                StarfieldBackground()
+                VStack(spacing: 16) {
+                    // Шапка
+                    HStack {
+                        Button(action: onBack) {
+                            Image(systemName: "chevron.left")
+                                .font(.system(size: 20, weight: .bold))
+                                .foregroundColor(.white)
+                                .padding(10)
+                                .background(Color.black.opacity(0.5))
+                                .clipShape(Circle())
+                        }
+                        Spacer()
+                        HStack(spacing: 8) {
+                            Image(systemName: "trophy.fill")
+                                .foregroundColor(Color(red: 1.0, green: 0.85, blue: 0.24))
+                            Text("ЛИДЕРЫ")
+                                .font(.system(size: 22, weight: .heavy, design: .rounded))
+                                .foregroundColor(.white).tracking(3)
+                        }
+                        Spacer()
+                        Button(action: { network.getLeaderboard() }) {
+                            Image(systemName: "arrow.clockwise")
+                                .font(.system(size: 16, weight: .bold))
+                                .foregroundColor(.cyan)
+                                .padding(10)
+                                .background(Color.black.opacity(0.5))
+                                .clipShape(Circle())
+                        }
+                    }
+                    .padding(.horizontal, max(20, geo.safeAreaInsets.leading + 8))
+                    .padding(.top, max(8, geo.safeAreaInsets.top + 4))
+
+                    if network.leaderboard.isEmpty {
+                        Spacer()
+                        VStack(spacing: 12) {
+                            ProgressView().tint(.purple)
+                            Text("Загрузка рейтинга…")
+                                .font(.system(size: 14))
+                                .foregroundColor(.white.opacity(0.7))
+                        }
+                        Spacer()
+                    } else {
+                        ScrollView {
+                            VStack(spacing: 8) {
+                                ForEach(network.leaderboard) { entry in
+                                    entryRow(entry)
+                                }
+                            }
+                            .padding(.horizontal, 24)
+                            .padding(.vertical, 8)
+                        }
+                    }
+                }
+            }
+        }
+        .ignoresSafeArea()
+        .onAppear {
+            network.getLeaderboard()
+            refreshTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { _ in
+                network.getLeaderboard()
+            }
+        }
+        .onDisappear {
+            refreshTimer?.invalidate()
+            refreshTimer = nil
+        }
+    }
+
+    private func entryRow(_ entry: LeaderboardEntry) -> some View {
+        Button {
+            onOpenProfile(entry.name)
+        } label: {
+            HStack(spacing: 14) {
+                // Место
+                ZStack {
+                    Circle()
+                        .fill(medalColor(for: entry.rank))
+                        .frame(width: 44, height: 44)
+                    if entry.rank <= 3 {
+                        Text(medalEmoji(for: entry.rank))
+                            .font(.system(size: 22))
+                    } else {
+                        Text("\(entry.rank)")
+                            .font(.system(size: 18, weight: .heavy, design: .rounded))
+                            .foregroundColor(.white)
+                    }
+                }
+
+                // Имя + галочка
+                VerifiedName(name: entry.name, verified: entry.verified, fontSize: 16, fontWeight: .bold)
+
+                Spacer()
+
+                // Очки и монеты
+                VStack(alignment: .trailing, spacing: 2) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "star.circle.fill")
+                            .font(.system(size: 12))
+                            .foregroundColor(Color(red: 1.0, green: 0.85, blue: 0.24))
+                        Text("\(entry.score)")
+                            .font(.system(size: 16, weight: .heavy, design: .rounded))
+                            .foregroundColor(.white)
+                    }
+                    HStack(spacing: 4) {
+                        Image(systemName: "dollarsign.circle.fill")
+                            .font(.system(size: 11))
+                            .foregroundColor(Color(red: 1.0, green: 0.85, blue: 0.24))
+                        Text("\(entry.coins)")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundColor(.white.opacity(0.75))
+                    }
+                }
+
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundColor(.white.opacity(0.4))
+            }
+            .padding(12)
+            .background(
+                entry.rank <= 3 ?
+                    Color.orange.opacity(0.12) :
+                    Color.white.opacity(0.06)
+            )
+            .cornerRadius(14)
+            .overlay(
+                RoundedRectangle(cornerRadius: 14)
+                    .stroke(
+                        entry.verified ? Color.blue.opacity(0.6) :
+                        (entry.rank <= 3 ? Color.orange.opacity(0.5) : Color.purple.opacity(0.3)),
+                        lineWidth: 1
+                    )
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func medalColor(for rank: Int) -> Color {
+        switch rank {
+        case 1: return Color(red: 1.0, green: 0.85, blue: 0.24).opacity(0.35)
+        case 2: return Color(white: 0.75).opacity(0.35)
+        case 3: return Color(red: 0.80, green: 0.50, blue: 0.25).opacity(0.35)
+        default: return Color.purple.opacity(0.25)
+        }
+    }
+
+    private func medalEmoji(for rank: Int) -> String {
+        switch rank {
+        case 1: return "🥇"
+        case 2: return "🥈"
+        case 3: return "🥉"
+        default: return ""
+        }
+    }
+}
+
+// MARK: - Профиль (sheet)
+struct ProfileSheet: View {
+    @ObservedObject var network: NetworkManager
+    let username: String
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        ZStack {
+            StarfieldBackground()
+            VStack(spacing: 20) {
+                // Шапка
+                HStack {
+                    Spacer()
+                    Button(action: { dismiss() }) {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 28))
+                            .foregroundColor(.white.opacity(0.7))
+                    }
+                }
+                .padding(.horizontal, 24)
+                .padding(.top, 20)
+
+                Spacer()
+
+                if let profile = network.currentProfile {
+                    // Аватар
+                    ZStack {
+                        Circle()
+                            .fill(Color.purple.opacity(0.25))
+                            .frame(width: 100, height: 100)
+                        Image(systemName: "person.fill")
+                            .font(.system(size: 50))
+                            .foregroundColor(.white)
+                        if profile.verified {
+                            Image(systemName: "checkmark.seal.fill")
+                                .font(.system(size: 28))
+                                .foregroundColor(.blue)
+                                .shadow(color: .blue.opacity(0.7), radius: 6)
+                                .offset(x: 35, y: 35)
+                        }
+                    }
+
+                    // Имя + галочка
+                    HStack(spacing: 8) {
+                        Text(profile.username)
+                            .font(.system(size: 26, weight: .heavy, design: .rounded))
+                            .foregroundColor(.white)
+                        if profile.verified {
+                            Image(systemName: "checkmark.seal.fill")
+                                .font(.system(size: 24))
+                                .foregroundColor(.blue)
+                                .shadow(color: .blue.opacity(0.7), radius: 5)
+                        }
+                    }
+
+                    // Статистика
+                    HStack(spacing: 30) {
+                        VStack(spacing: 4) {
+                            Text("Рекорд")
+                                .font(.system(size: 12))
+                                .foregroundColor(.white.opacity(0.6))
+                            HStack(spacing: 4) {
+                                Image(systemName: "star.circle.fill")
+                                    .foregroundColor(Color(red: 1.0, green: 0.85, blue: 0.24))
+                                Text("\(profile.bestScore)")
+                                    .font(.system(size: 24, weight: .heavy))
+                                    .foregroundColor(.white)
+                            }
+                        }
+                        VStack(spacing: 4) {
+                            Text("Монеты")
+                                .font(.system(size: 12))
+                                .foregroundColor(.white.opacity(0.6))
+                            HStack(spacing: 4) {
+                                Image(systemName: "dollarsign.circle.fill")
+                                    .foregroundColor(Color(red: 1.0, green: 0.85, blue: 0.24))
+                                Text("\(profile.coins)")
+                                    .font(.system(size: 24, weight: .heavy))
+                                    .foregroundColor(.white)
+                            }
+                        }
+                    }
+                    .padding(.top, 10)
+
+                    if profile.verified {
+                        HStack(spacing: 6) {
+                            Image(systemName: "checkmark.seal.fill")
+                                .foregroundColor(.blue)
+                            Text("Верифицированный игрок")
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundColor(.blue.opacity(0.9))
+                        }
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 8)
+                        .background(Color.blue.opacity(0.15))
+                        .cornerRadius(20)
+                    }
+                } else if let err = network.profileError {
+                    VStack(spacing: 12) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.system(size: 50))
+                            .foregroundColor(.orange)
+                        Text(err)
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundColor(.white.opacity(0.8))
+                    }
+                } else {
+                    VStack(spacing: 12) {
+                        ProgressView().tint(.purple).scaleEffect(1.3)
+                        Text("Загрузка профиля…")
+                            .font(.system(size: 14))
+                            .foregroundColor(.white.opacity(0.7))
+                    }
+                }
+
+                Spacer()
+            }
+        }
+        .preferredColorScheme(.dark)
+        .statusBarHidden(true)
     }
 }
 
@@ -949,9 +1438,7 @@ struct GameView: View {
                           let y = dict["y"] as? Double else { return nil }
                     return Bullet(x: CGFloat(x), y: CGFloat(y))
                 }
-                if net.remoteGameOver && !isGameOver {
-                    triggerGameOver()
-                }
+                if net.remoteGameOver && !isGameOver { triggerGameOver() }
             }
             return
         }
@@ -1041,8 +1528,6 @@ struct GameView: View {
     func triggerGameOver() {
         guard !isGameOver else { return }
         isGameOver = true
-        // Если играем онлайн — сервер сам пришлёт правильные значения через score_saved
-        // store.commit нужен только для оффлайн-игры
         if !isMultiplayer {
             store.commit(score: score, coins: earnedCoins)
         }
@@ -1166,51 +1651,35 @@ struct NoInternetView: View {
     var body: some View {
         ZStack {
             Color.black.opacity(0.95).ignoresSafeArea()
-
             VStack(spacing: 20) {
                 ZStack {
-                    Circle()
-                        .fill(Color.red.opacity(0.15))
-                        .frame(width: 130, height: 130)
+                    Circle().fill(Color.red.opacity(0.15)).frame(width: 130, height: 130)
                     Image(systemName: "wifi.slash")
-                        .font(.system(size: 60))
-                        .foregroundColor(.red)
+                        .font(.system(size: 60)).foregroundColor(.red)
                 }
-
                 Text("Нет соединения с интернетом")
                     .font(.system(size: 22, weight: .heavy, design: .rounded))
-                    .foregroundColor(.white)
-                    .multilineTextAlignment(.center)
-
+                    .foregroundColor(.white).multilineTextAlignment(.center)
                 Text("Проверьте Wi-Fi или мобильные данные")
-                    .font(.system(size: 14))
-                    .foregroundColor(.white.opacity(0.7))
+                    .font(.system(size: 14)).foregroundColor(.white.opacity(0.7))
                     .multilineTextAlignment(.center)
-
                 Button(action: {
                     rotate = true
                     onRetry()
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
-                        rotate = false
-                    }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { rotate = false }
                 }) {
                     HStack(spacing: 8) {
                         Image(systemName: "arrow.clockwise")
                             .rotationEffect(.degrees(rotate ? 360 : 0))
                             .animation(.linear(duration: 0.6), value: rotate)
-                        Text("Повторить")
-                            .font(.system(size: 17, weight: .bold))
+                        Text("Повторить").font(.system(size: 17, weight: .bold))
                     }
                     .foregroundColor(.white)
-                    .padding(.horizontal, 34)
-                    .padding(.vertical, 14)
-                    .background(
-                        LinearGradient(
-                            colors: [Color(red: 0.42, green: 0.36, blue: 0.91),
-                                     Color(red: 0.29, green: 0.23, blue: 0.71)],
-                            startPoint: .top, endPoint: .bottom
-                        )
-                    )
+                    .padding(.horizontal, 34).padding(.vertical, 14)
+                    .background(LinearGradient(
+                        colors: [Color(red: 0.42, green: 0.36, blue: 0.91),
+                                 Color(red: 0.29, green: 0.23, blue: 0.71)],
+                        startPoint: .top, endPoint: .bottom))
                     .cornerRadius(16)
                     .shadow(color: .purple.opacity(0.6), radius: 15)
                 }
@@ -1229,43 +1698,31 @@ struct ServerErrorView: View {
     var body: some View {
         ZStack {
             Color.black.opacity(0.95).ignoresSafeArea()
-
             VStack(spacing: 20) {
                 ZStack {
-                    Circle()
-                        .fill(Color.orange.opacity(0.15))
+                    Circle().fill(Color.orange.opacity(0.15))
                         .frame(width: 130, height: 130)
                         .scaleEffect(pulse ? 1.1 : 1.0)
                         .animation(.easeInOut(duration: 1).repeatForever(autoreverses: true), value: pulse)
                     Image(systemName: "exclamationmark.triangle.fill")
-                        .font(.system(size: 60))
-                        .foregroundColor(.orange)
+                        .font(.system(size: 60)).foregroundColor(.orange)
                 }
-
                 Text("Технические неполадки")
                     .font(.system(size: 24, weight: .heavy, design: .rounded))
                     .foregroundColor(.white)
-
                 Text("Сервер временно недоступен.\nПопробуйте позже.")
-                    .font(.system(size: 14))
-                    .foregroundColor(.white.opacity(0.7))
+                    .font(.system(size: 14)).foregroundColor(.white.opacity(0.7))
                     .multilineTextAlignment(.center)
-
                 Button(action: onRestart) {
                     HStack(spacing: 8) {
                         Image(systemName: "arrow.clockwise")
-                        Text("Перезагрузить игру")
-                            .font(.system(size: 16, weight: .bold))
+                        Text("Перезагрузить игру").font(.system(size: 16, weight: .bold))
                     }
                     .foregroundColor(.white)
-                    .padding(.horizontal, 28)
-                    .padding(.vertical, 14)
-                    .background(
-                        LinearGradient(
-                            colors: [Color.orange, Color.red.opacity(0.8)],
-                            startPoint: .top, endPoint: .bottom
-                        )
-                    )
+                    .padding(.horizontal, 28).padding(.vertical, 14)
+                    .background(LinearGradient(
+                        colors: [Color.orange, Color.red.opacity(0.8)],
+                        startPoint: .top, endPoint: .bottom))
                     .cornerRadius(16)
                     .shadow(color: .orange.opacity(0.6), radius: 15)
                 }
