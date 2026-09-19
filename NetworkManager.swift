@@ -15,12 +15,20 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
     @Published var incomingInvite: PlayerInfo? = nil
     @Published var connectionError: String? = nil
 
+    // Авторизация
+    @Published var isAuthenticated = false
+    @Published var username: String = ""
+    @Published var displayName: String = ""
+    @Published var userID: Int = 0
+    @Published var authError: String? = nil
+    @Published var needAuth = false
+    @Published var isConnecting = false
+
     // Мультиплеер
     @Published var gameStarted = false
     @Published var peerID: String? = nil
     @Published var isHost: Bool = false
 
-    // Данные от партнёра
     @Published var remoteHeroY: CGFloat = 0
     @Published var remoteEnemies: [[String: Any]] = []
     @Published var remoteBullets: [[String: Any]] = []
@@ -28,41 +36,26 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
     @Published var remoteCoins: Int = 0
     @Published var remoteGameOver = false
 
-    // ============================================================
-    // ПУБЛИЧНЫЙ URL от CloudPub (туннель на твой ПК)
-    // Меняй здесь, если CloudPub выдал новый адрес
-    // ============================================================
     let serverURL = "wss://popularly-phlegmatic-tomcat.cloudpub.ru:443"
 
-    // Для локального теста в одной Wi-Fi — раскомментируй строку ниже
-    // и закомментируй serverURL выше:
-    // let serverURL = "ws://192.168.31.95:8765"
-
     private var myPlayerID: String = ""
-    private let myDisplayName: String
     private var pendingPeerID: String? = nil
 
     override init() {
-        var name = UIDevice.current.name
-            .replacingOccurrences(of: "#", with: "")
-            .trimmingCharacters(in: .whitespaces)
-        if name.isEmpty { name = "Player" }
-        if name.count > 20 { name = String(name.prefix(20)) }
-        self.myDisplayName = name
-
         super.init()
         let config = URLSessionConfiguration.default
         session = URLSession(configuration: config, delegate: self, delegateQueue: OperationQueue.main)
     }
 
     func connect() {
-        let urlString = serverURL
-        print("🔌 Подключение к \(urlString)")
-        guard let url = URL(string: urlString) else {
-            connectionError = "Неверный адрес сервера"
+        if isConnected || isConnecting { return }
+        print("🔌 Подключение к \(serverURL)")
+        guard let url = URL(string: serverURL) else {
+            connectionError = "Неверный адрес"
             return
         }
         connectionError = nil
+        isConnecting = true
         resetGameState()
         webSocketTask = session.webSocketTask(with: url)
         webSocketTask?.resume()
@@ -73,6 +66,7 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
         webSocketTask?.cancel(with: .normalClosure, reason: nil)
         webSocketTask = nil
         isConnected = false
+        isConnecting = false
         onlinePlayers = []
         myPlayerID = ""
         resetGameState()
@@ -91,44 +85,56 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
         remoteGameOver = false
     }
 
-    func refreshPlayerList() { sendJSON(["type": "get_players"]) }
-    private func sendName() { sendJSON(["type": "set_name", "name": myDisplayName]) }
+    func logout() {
+        AuthStore.shared.clear()
+        isAuthenticated = false
+        username = ""
+        displayName = ""
+        userID = 0
+        disconnect()
+    }
 
+    // ============ АВТОРИЗАЦИЯ ============
+    func register(username: String, password: String) {
+        authError = nil
+        sendJSON(["type": "register", "username": username, "password": password])
+    }
+    func login(username: String, password: String) {
+        authError = nil
+        sendJSON(["type": "login", "username": username, "password": password])
+    }
+    func tokenLogin() {
+        guard let token = AuthStore.shared.token else { return }
+        sendJSON(["type": "token_login", "token": token])
+    }
+    func sendName() { sendJSON(["type": "set_name"]) }
+    func submitScore(_ score: Int, coins: Int) {
+        sendJSON(["type": "submit_score", "score": score, "coins": coins])
+    }
+
+    func refreshPlayerList() { sendJSON(["type": "get_players"]) }
     func sendInvite(to targetID: String) {
         pendingPeerID = targetID
         sendJSON(["type": "invite", "target_id": targetID])
     }
-
     func respondToInvite(from targetID: String, accepted: Bool) {
-        if accepted {
-            peerID = targetID
-            isHost = false
-            gameStarted = true
-        }
+        if accepted { peerID = targetID; isHost = false; gameStarted = true }
         sendJSON(["type": "invite_response", "target_id": targetID, "accepted": accepted])
     }
 
-    // Хост шлёт состояние гостю
     func sendGameState(enemies: [[String: Any]], bullets: [[String: Any]],
                        hostY: CGFloat, score: Int, coins: Int, gameOver: Bool) {
         guard let peer = peerID else { return }
-        let payload: [String: Any] = [
-            "kind": "state",
-            "enemies": enemies,
-            "bullets": bullets,
-            "hostY": hostY,
-            "score": score,
-            "coins": coins,
-            "gameOver": gameOver
-        ]
-        sendJSON(["type": "game_data", "target_id": peer, "payload": payload])
+        sendJSON(["type": "game_data", "target_id": peer, "payload": [
+            "kind": "state", "enemies": enemies, "bullets": bullets,
+            "hostY": hostY, "score": score, "coins": coins, "gameOver": gameOver
+        ]])
     }
-
-    // Гость шлёт свою Y хосту
     func sendClientY(_ y: CGFloat) {
         guard let peer = peerID else { return }
-        let payload: [String: Any] = ["kind": "clientY", "y": Double(y)]
-        sendJSON(["type": "game_data", "target_id": peer, "payload": payload])
+        sendJSON(["type": "game_data", "target_id": peer, "payload": [
+            "kind": "clientY", "y": Double(y)
+        ]])
     }
 
     private func sendJSON(_ dict: [String: Any]) {
@@ -149,18 +155,17 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
             case .failure(let error):
                 DispatchQueue.main.async {
                     self?.isConnected = false
+                    self?.isConnecting = false
                     if self?.connectionError == nil {
                         self?.connectionError = "Сервер недоступен"
                     }
-                    print("❌ WS error: \(error.localizedDescription)")
+                    print("❌ WS: \(error.localizedDescription)")
                 }
             case .success(let message):
                 switch message {
                 case .string(let text): self?.handleMessage(text)
                 case .data(let data):
-                    if let text = String(data: data, encoding: .utf8) {
-                        self?.handleMessage(text)
-                    }
+                    if let text = String(data: data, encoding: .utf8) { self?.handleMessage(text) }
                 @unknown default: break
                 }
                 self?.receiveMessage()
@@ -175,10 +180,38 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
 
         DispatchQueue.main.async {
             switch type {
-            case "welcome":
-                if let id = json["your_id"] as? String {
-                    self.myPlayerID = id
+            case "need_auth":
+                self.needAuth = true
+                if AuthStore.shared.token != nil { self.tokenLogin() }
+
+            case "auth_ok":
+                if let token = json["token"] as? String,
+                   let name = json["username"] as? String,
+                   let uid = json["user_id"] as? Int,
+                   let display = json["display_name"] as? String {
+                    AuthStore.shared.token = token
+                    AuthStore.shared.username = name
+                    self.username = name
+                    self.displayName = display
+                    self.userID = uid
+                    self.isAuthenticated = true
+                    self.needAuth = false
+                    self.authError = nil
                     self.sendName()
+                    if let best = json["best_score"] as? Int {
+                        UserDefaults.standard.set(best, forKey: "cosmic_best")
+                    }
+                    if let co = json["coins"] as? Int {
+                        UserDefaults.standard.set(co, forKey: "cosmic_coins")
+                    }
+                    print("✅ Авторизован: \(display)")
+                }
+
+            case "auth_error":
+                if let msg = json["message"] as? String {
+                    self.authError = msg
+                    self.isAuthenticated = false
+                    AuthStore.shared.clear()
                 }
 
             case "player_list":
@@ -201,9 +234,7 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
             case "invite_answer":
                 if let accepted = json["accepted"] as? Bool, accepted {
                     if let peer = self.pendingPeerID {
-                        self.peerID = peer
-                        self.isHost = true
-                        self.gameStarted = true
+                        self.peerID = peer; self.isHost = true; self.gameStarted = true
                     }
                 }
 
@@ -213,16 +244,12 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
                     if kind == "state" && !self.isHost {
                         self.remoteEnemies = payload["enemies"] as? [[String: Any]] ?? []
                         self.remoteBullets = payload["bullets"] as? [[String: Any]] ?? []
-                        if let hostY = payload["hostY"] as? Double {
-                            self.remoteHeroY = CGFloat(hostY)
-                        }
+                        if let y = payload["hostY"] as? Double { self.remoteHeroY = CGFloat(y) }
                         if let sc = payload["score"] as? Int { self.remoteScore = sc }
                         if let co = payload["coins"] as? Int { self.remoteCoins = co }
                         if let go = payload["gameOver"] as? Bool { self.remoteGameOver = go }
                     } else if kind == "clientY" && self.isHost {
-                        if let y = payload["y"] as? Double {
-                            self.remoteHeroY = CGFloat(y)
-                        }
+                        if let y = payload["y"] as? Double { self.remoteHeroY = CGFloat(y) }
                     }
                 }
 
@@ -235,6 +262,7 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
     func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didOpenWithProtocol protocol: String?) {
         DispatchQueue.main.async {
             self.isConnected = true
+            self.isConnecting = false
             self.connectionError = nil
             print("✅ WebSocket подключен")
         }
@@ -243,25 +271,19 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
     func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didCloseWith closeCode: URLSessionWebSocketTask.CloseCode, reason: Data?) {
         DispatchQueue.main.async {
             self.isConnected = false
-            if self.connectionError == nil {
-                self.connectionError = "Соединение закрыто"
-            }
-            print("❌ WebSocket отключен")
+            self.isConnecting = false
+            if self.connectionError == nil { self.connectionError = "Соединение закрыто" }
         }
     }
 
-    // MARK: - Доверие сертификату (на случай если CloudPub отдаст нестандартный)
+    // MARK: - Доверие сертификату
     func urlSession(_ session: URLSession,
                     didReceive challenge: URLAuthenticationChallenge,
                     completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
-
         guard challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
               let serverTrust = challenge.protectionSpace.serverTrust else {
-            completionHandler(.performDefaultHandling, nil)
-            return
+            completionHandler(.performDefaultHandling, nil); return
         }
-
-        let credential = URLCredential(trust: serverTrust)
-        completionHandler(.useCredential, credential)
+        completionHandler(.useCredential, URLCredential(trust: serverTrust))
     }
 }
