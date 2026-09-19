@@ -133,6 +133,7 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
             connectionError = "Неверный адрес"
             return
         }
+        print("🔌 [NET] Подключение к \(serverURL)")
         connectionError = nil
         serverDown = false
         isConnecting = true
@@ -251,8 +252,7 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
         sendJSON(["type": "start_round"])
     }
 
-    /// Live-сохранение: вызывай при каждом изменении score/earnedCoins.
-    /// Дебаунс 150 мс — если изменения идут подряд, уйдёт только последнее.
+    /// Live-сохранение с дебаунсом 150 мс.
     func submitScoreLive(score: Int, earnedCoins: Int) {
         guard roundActive else { return }
         pendingScore = score
@@ -264,10 +264,8 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
         }
     }
 
-    /// Финальная отправка — при выходе через домик или смерти.
-    /// Уходит немедленно, без ожидания дебаунса.
+    /// Финальная отправка — немедленно, без дебаунса.
     func submitScoreFinal(score: Int, earnedCoins: Int) {
-        guard roundActive else { return }
         liveTimer?.invalidate()
         liveTimer = nil
         pendingScore = score
@@ -289,17 +287,23 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
     // MARK: - Авторизация
     func register(username: String, password: String) {
         authError = nil
+        print("📤 [NET] → register(\(username))")
         sendJSON(["type": "register", "username": username, "password": password])
     }
     func login(username: String, password: String) {
         authError = nil
+        print("📤 [NET] → login(\(username))")
         sendJSON(["type": "login", "username": username, "password": password])
     }
     func tokenLogin() {
         guard let token = AuthStore.shared.token else { return }
+        print("📤 [NET] → token_login")
         sendJSON(["type": "token_login", "token": token])
     }
-    func sendName() { sendJSON(["type": "set_name"]) }
+    func sendName() {
+        print("📤 [NET] → set_name")
+        sendJSON(["type": "set_name"])
+    }
 
     func refreshPlayerList() { sendJSON(["type": "get_players"]) }
     func getLeaderboard() { sendJSON(["type": "get_leaderboard"]) }
@@ -340,7 +344,8 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
 
         let isCritical = isCriticalMessage(dict)
 
-        if !isSocketOpen || !isSocketAlive || webSocketTask == nil {
+        // ✅ ФИКС: убрали isSocketAlive из проверки
+        if !isSocketOpen || webSocketTask == nil {
             if isCritical {
                 if pendingMessages.count < maxBufferSize {
                     print("⏳ [NET] Буферизую: \(string.prefix(80))")
@@ -354,12 +359,11 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
         }
 
         webSocketTask?.send(.string(string)) { [weak self] error in
-            if let error = error {
-                DispatchQueue.main.async {
-                    self?.connectionError = "Ошибка: \(error.localizedDescription)"
-                    if isCritical, let s = self, s.pendingMessages.count < s.maxBufferSize {
-                        s.pendingMessages.append(string)
-                    }
+            guard error != nil else { return }
+            DispatchQueue.main.async {
+                self?.connectionError = "Ошибка отправки"
+                if isCritical, let s = self, s.pendingMessages.count < s.maxBufferSize {
+                    s.pendingMessages.append(string)
                 }
             }
         }
@@ -376,16 +380,16 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
     }
 
     private func flushPendingMessages() {
-        guard isSocketOpen, isSocketAlive, !pendingMessages.isEmpty else { return }
+        // ✅ ФИКС: убрали isSocketAlive из проверки
+        guard isSocketOpen, !pendingMessages.isEmpty else { return }
         print("🚀 [NET] Отправляю буфер (\(pendingMessages.count))")
         let toSend = pendingMessages
         pendingMessages.removeAll()
         for string in toSend {
             webSocketTask?.send(.string(string)) { [weak self] error in
-                if let error = error {
-                    DispatchQueue.main.async {
-                        self?.pendingMessages.append(string)
-                    }
+                guard error != nil else { return }
+                DispatchQueue.main.async {
+                    self?.pendingMessages.append(string)
                 }
             }
         }
@@ -436,15 +440,14 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
             switch type {
             case "pong":
                 self.lastPongTime = Date()
-                if !self.isSocketAlive {
-                    self.isSocketAlive = true
-                    print("💚 [NET] Сокет живой — flush буфер")
-                    self.flushPendingMessages()
-                }
+                self.isSocketAlive = true
 
             case "need_auth":
+                print("🔐 [NET] Сервер требует авторизацию")
                 self.needAuth = true
-                if AuthStore.shared.token != nil { self.tokenLogin() }
+                if AuthStore.shared.token != nil {
+                    self.tokenLogin()
+                }
 
             case "auth_ok":
                 if let token = json["token"] as? String,
@@ -470,10 +473,12 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
                         self.serverCoins = co
                         UserDefaults.standard.set(co, forKey: "cosmic_coins")
                     }
+                    print("✅ [NET] Авторизован: \(display)")
                 }
 
             case "auth_error":
                 if let msg = json["message"] as? String {
+                    print("⛔️ [NET] auth_error: \(msg)")
                     self.authError = msg
                     self.isAuthenticated = false
                     AuthStore.shared.clear()
@@ -481,6 +486,7 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
 
             case "banned":
                 if let msg = json["message"] as? String {
+                    print("🚫 [NET] Бан: \(msg)")
                     self.authError = msg
                     self.isAuthenticated = false
                     AuthStore.shared.clear()
@@ -571,26 +577,33 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
                     }
                 }
 
-            default: break
+            default:
+                print("⚠️ [NET] Неизвестный тип: \(type)")
             }
         }
     }
 
-    // MARK: - Delegate
+    // MARK: - URLSessionWebSocketDelegate
     func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didOpenWithProtocol protocol: String?) {
         DispatchQueue.main.async {
             print("✅ [NET] WebSocket открыт")
             self.isConnected = true
             self.isConnecting = false
             self.isSocketOpen = true
-            self.isSocketAlive = false
+            // ✅ ФИКС: считаем сокет живым сразу после открытия, не ждём pong
+            self.isSocketAlive = true
             self.lastPongTime = Date()
             self.connectionError = nil
             self.serverDown = false
 
+            // Авто-логин после reconnect, если уже авторизованы
             if self.isAuthenticated, let token = AuthStore.shared.token {
+                print("🔐 [NET] Авто-логин после reconnect")
                 self.sendJSON(["type": "token_login", "token": token])
             }
+
+            // ✅ ФИКС: сразу отправляем буфер
+            self.flushPendingMessages()
         }
     }
 
@@ -616,12 +629,14 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
         }
     }
 
+    // MARK: - Доверие сертификату
     func urlSession(_ session: URLSession,
                     didReceive challenge: URLAuthenticationChallenge,
                     completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
         guard challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
               let serverTrust = challenge.protectionSpace.serverTrust else {
-            completionHandler(.performDefaultHandling, nil); return
+            completionHandler(.performDefaultHandling, nil)
+            return
         }
         completionHandler(.useCredential, URLCredential(trust: serverTrust))
     }
