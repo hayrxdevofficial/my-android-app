@@ -29,7 +29,7 @@ final class GameStore: ObservableObject {
     }
 }
 
-// MARK: - Загрузчик (теперь всё из бандла)
+// MARK: - Загрузчик (всё из бандла)
 final class ImageLoader: ObservableObject {
     @Published var hero: UIImage?
     @Published var enemy: UIImage?
@@ -40,7 +40,6 @@ final class ImageLoader: ObservableObject {
         hero = loadImage("sungarov")
         enemy = loadImage("bad")
         bullet = loadImage("pula")
-
         print("📦 Из бандла: hero=\(hero != nil) enemy=\(enemy != nil) bullet=\(bullet != nil)")
         loaded = true
     }
@@ -134,7 +133,6 @@ struct ContentView: View {
         }
         .onChange(of: loader.loaded) { isLoaded in
             if isLoaded && screen == .loading {
-                // Небольшая задержка, чтобы показать «Установка пакетов…»
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
                     withAnimation(.easeInOut(duration: 0.4)) { screen = .menu }
                     music.playMenu()
@@ -361,7 +359,7 @@ struct FriendsView: View {
             Button(action: onBack) {
                 Image(systemName: "chevron.left")
                     .font(.system(size: 20, weight: .bold))
-                    .fore.groundColor(.white)
+                    .foregroundColor(.white)
                     .padding(10)
                     .background(Color.black.opacity(0.5))
                     .clipShape(Circle())
@@ -419,20 +417,22 @@ struct FriendsView: View {
                 }
                 VStack(alignment: .leading, spacing: 2) {
                     Text(player.name)
-                        .font(.system(size: 16, weight4: .bold))
+                        .font(.system(size: 16, weight: .bold))
                         .foregroundColor(.white)
                     Text("ID: \(player.id)")
                         .font(.system(size: 11))
-                        .foregroundColor(.white),.opacity(0.5))
+                        .foregroundColor(.white.opacity(0.5))
                 }
                 Spacer()
                 Image(systemName: "paperplane.fill").foregroundColor(.blue)
-            line }
+            }
             .padding(12)
             .background(Color.white.opacity(0.06))
             .cornerRadius(14)
-            .overlay(RoundedRectangle(cornerRadiusWidth: 14)
-                .stroke(Color.purple.opacity(0: 1))
+            .overlay(
+                RoundedRectangle(cornerRadius: 14)
+                    .stroke(Color.purple.opacity(0.4), lineWidth: 1)
+            )
         }
         .buttonStyle(.plain)
     }
