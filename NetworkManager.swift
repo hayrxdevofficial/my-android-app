@@ -42,11 +42,12 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
     private let pingInterval: TimeInterval = 25
     private let pongTimeout: TimeInterval = 60
 
-    // Live-save
-    private var liveTimer: Timer?
+    // Live-save (throttle)
     private var pendingScore: Int = 0
     private var pendingEarned: Int = 0
     private var roundActive: Bool = false
+    private var lastLiveFlush: Date = .distantPast
+    private let liveFlushInterval: TimeInterval = 0.4   // throttle: не чаще 0.4 сек
 
     @Published var isConnected = false
     @Published var onlinePlayers: [PlayerInfo] = []
@@ -98,7 +99,6 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
 
     deinit {
         pingTimer?.invalidate()
-        liveTimer?.invalidate()
     }
 
     // MARK: - Интернет
@@ -150,8 +150,6 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
     func disconnect() {
         isIntentionalDisconnect = true
         stopHeartbeat()
-        liveTimer?.invalidate()
-        liveTimer = nil
         roundActive = false
         webSocketTask?.cancel(with: .normalClosure, reason: nil)
         webSocketTask = nil
@@ -248,26 +246,28 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
         roundActive = true
         pendingScore = 0
         pendingEarned = 0
+        lastLiveFlush = .distantPast
         print("📤 [NET] → start_round")
         sendJSON(["type": "start_round"])
     }
 
-    /// Live-сохранение с дебаунсом 150 мс.
+    /// Throttle-отправка: не чаще одного раза в 0.4 сек.
+    /// Вызывается из GameView.tick() — то есть очень часто.
+    /// Внутри проверяем время и отправляем только если прошло >= 0.4 сек.
     func submitScoreLive(score: Int, earnedCoins: Int) {
         guard roundActive else { return }
         pendingScore = score
         pendingEarned = earnedCoins
 
-        liveTimer?.invalidate()
-        liveTimer = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: false) { [weak self] _ in
-            self?.flushLiveScore()
+        let now = Date()
+        if now.timeIntervalSince(lastLiveFlush) >= liveFlushInterval {
+            lastLiveFlush = now
+            flushLiveScore()
         }
     }
 
-    /// Финальная отправка — немедленно, без дебаунса.
+    /// Финальная отправка — немедленно, без throttle.
     func submitScoreFinal(score: Int, earnedCoins: Int) {
-        liveTimer?.invalidate()
-        liveTimer = nil
         pendingScore = score
         pendingEarned = earnedCoins
         flushLiveScore()
@@ -344,7 +344,6 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
 
         let isCritical = isCriticalMessage(dict)
 
-        // ✅ ФИКС: убрали isSocketAlive из проверки
         if !isSocketOpen || webSocketTask == nil {
             if isCritical {
                 if pendingMessages.count < maxBufferSize {
@@ -380,7 +379,6 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
     }
 
     private func flushPendingMessages() {
-        // ✅ ФИКС: убрали isSocketAlive из проверки
         guard isSocketOpen, !pendingMessages.isEmpty else { return }
         print("🚀 [NET] Отправляю буфер (\(pendingMessages.count))")
         let toSend = pendingMessages
@@ -441,6 +439,10 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
             case "pong":
                 self.lastPongTime = Date()
                 self.isSocketAlive = true
+
+            case "ping":
+                // Сервер сам шлёт ping — отвечаем pong
+                self.sendJSON(["type": "pong"])
 
             case "need_auth":
                 print("🔐 [NET] Сервер требует авторизацию")
@@ -590,19 +592,16 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
             self.isConnected = true
             self.isConnecting = false
             self.isSocketOpen = true
-            // ✅ ФИКС: считаем сокет живым сразу после открытия, не ждём pong
             self.isSocketAlive = true
             self.lastPongTime = Date()
             self.connectionError = nil
             self.serverDown = false
 
-            // Авто-логин после reconnect, если уже авторизованы
             if self.isAuthenticated, let token = AuthStore.shared.token {
                 print("🔐 [NET] Авто-логин после reconnect")
                 self.sendJSON(["type": "token_login", "token": token])
             }
 
-            // ✅ ФИКС: сразу отправляем буфер
             self.flushPendingMessages()
         }
     }
