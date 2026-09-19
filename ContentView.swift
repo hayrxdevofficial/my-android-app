@@ -91,6 +91,11 @@ struct ContentView: View {
     @State private var profileUsername: String? = nil
     @Environment(\.scenePhase) private var scenePhase
 
+    // ✨ Флаги для админ-команд
+    @State private var adminMessageShown = false
+    @State private var adminBroadcastShown = false
+    @State private var kickedAlertShown = false
+
     var body: some View {
         ZStack {
             Color(red: 0.043, green: 0.059, blue: 0.165)
@@ -145,6 +150,16 @@ struct ContentView: View {
         .onChange(of: network.serverCoins) { newCoins in
             if store.coins != newCoins { store.coins = newCoins }
         }
+        // ✨ Админ-команды: onChange + alert
+        .onChange(of: network.adminMessage) { msg in
+            if msg != nil { adminMessageShown = true }
+        }
+        .onChange(of: network.adminBroadcast) { msg in
+            if msg != nil { adminBroadcastShown = true }
+        }
+        .onChange(of: network.kickedReason) { reason in
+            if reason != nil { kickedAlertShown = true }
+        }
         .alert("Хотите помочь игроку?", isPresented: $showInviteAlert) {
             inviteAlertContent
         } message: {
@@ -154,6 +169,25 @@ struct ContentView: View {
             authNeededAlertContent
         } message: {
             Text("Чтобы играть с друзьями и смотреть лидеров, войдите в аккаунт.")
+        }
+        // ✨ Алерты админ-команд
+        .alert("✉️ Сообщение от админа", isPresented: $adminMessageShown) {
+            Button("ОК") { network.adminMessage = nil }
+        } message: {
+            Text(network.adminMessage ?? "")
+        }
+        .alert("📢 Объявление", isPresented: $adminBroadcastShown) {
+            Button("ОК") { network.adminBroadcast = nil }
+        } message: {
+            Text(network.adminBroadcast ?? "")
+        }
+        .alert("👋 Вас отключили", isPresented: $kickedAlertShown) {
+            Button("ОК") {
+                network.kickedReason = nil
+                screen = .menu
+            }
+        } message: {
+            Text(network.kickedReason ?? "")
         }
         .preferredColorScheme(.dark)
         .statusBarHidden(true)
