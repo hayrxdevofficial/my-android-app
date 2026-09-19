@@ -69,7 +69,9 @@ struct ContentView: View {
 
     var body: some View {
         ZStack {
-            Color(red: 0.043, green: 0.059, blue: 0.165).ignoresSafeArea()
+            // Фон приложения на весь экран
+            Color(red: 0.043, green: 0.059, blue: 0.165)
+                .ignoresSafeArea()
 
             switch screen {
             case .loading:
@@ -502,65 +504,68 @@ struct AccountView: View {
                         .background(Color.black.opacity(0.4))
                         .cornerRadius(24)
                     } else {
-                        // Подключён — показываем формы
-                        VStack(spacing: 12) {
-                            Text(showSuccess ? "Вы зарегистрировались!" :
-                                 (isRegisterMode ? "Хотите создать аккаунт?" : "Вход в аккаунт"))
-                                .font(.system(size: 20, weight: .heavy, design: .rounded))
-                                .foregroundColor(showSuccess ? .green : .white)
+                        // Подключён — показываем формы в ScrollView
+                        ScrollView {
+                            VStack(spacing: 12) {
+                                Text(showSuccess ? "Вы зарегистрировались!" :
+                                     (isRegisterMode ? "Хотите создать аккаунт?" : "Вход в аккаунт"))
+                                    .font(.system(size: 20, weight: .heavy, design: .rounded))
+                                    .foregroundColor(showSuccess ? .green : .white)
 
-                            if !showSuccess {
-                                TextField("Имя (3-20 символов)", text: $username)
-                                    .textInputAutocapitalization(.never)
-                                    .autocorrectionDisabled(true)
-                                    .padding(14)
-                                    .background(Color.white.opacity(0.1))
-                                    .cornerRadius(14)
-                                    .foregroundColor(.white)
-                                    .frame(width: geo.size.width * 0.45)
-
-                                SecureField("Пароль (минимум 4)", text: $password)
-                                    .padding(14)
-                                    .background(Color.white.opacity(0.1))
-                                    .cornerRadius(14)
-                                    .foregroundColor(.white)
-                                    .frame(width: geo.size.width * 0.45)
-
-                                if let err = network.authError {
-                                    Text(err).font(.system(size: 13)).foregroundColor(.red)
-                                        .frame(width: geo.size.width * 0.45)
-                                }
-
-                                Button(action: {
-                                    if isRegisterMode {
-                                        network.register(username: username, password: password)
-                                    } else {
-                                        network.login(username: username, password: password)
-                                    }
-                                }) {
-                                    Text(isRegisterMode ? "Создать аккаунт" : "Войти")
-                                        .font(.system(size: 17, weight: .bold))
-                                        .foregroundColor(.white)
-                                        .frame(width: geo.size.width * 0.45, height: 50)
-                                        .background(LinearGradient(
-                                            colors: [Color(red: 0.42, green: 0.36, blue: 0.91),
-                                                     Color(red: 0.29, green: 0.23, blue: 0.71)],
-                                            startPoint: .top, endPoint: .bottom))
+                                if !showSuccess {
+                                    TextField("Имя (3-20 символов)", text: $username)
+                                        .textInputAutocapitalization(.never)
+                                        .autocorrectionDisabled(true)
+                                        .padding(14)
+                                        .background(Color.white.opacity(0.1))
                                         .cornerRadius(14)
-                                        .shadow(color: .purple.opacity(0.6), radius: 20)
-                                }
-                                .buttonStyle(.plain)
-                                .disabled(username.count < 3 || password.count < 4)
+                                        .foregroundColor(.white)
+                                        .frame(width: geo.size.width * 0.45)
 
-                                Button(action: { isRegisterMode.toggle(); network.authError = nil }) {
-                                    Text(isRegisterMode ? "Уже есть аккаунт? Войти" : "Нет аккаунта? Создать")
-                                        .font(.system(size: 13, weight: .semibold))
-                                        .foregroundColor(.cyan)
+                                    SecureField("Пароль (минимум 4)", text: $password)
+                                        .padding(14)
+                                        .background(Color.white.opacity(0.1))
+                                        .cornerRadius(14)
+                                        .foregroundColor(.white)
+                                        .frame(width: geo.size.width * 0.45)
+
+                                    if let err = network.authError {
+                                        Text(err).font(.system(size: 13)).foregroundColor(.red)
+                                            .frame(width: geo.size.width * 0.45)
+                                    }
+
+                                    Button(action: {
+                                        if isRegisterMode {
+                                            network.register(username: username, password: password)
+                                        } else {
+                                            network.login(username: username, password: password)
+                                        }
+                                    }) {
+                                        Text(isRegisterMode ? "Создать аккаунт" : "Войти")
+                                            .font(.system(size: 17, weight: .bold))
+                                            .foregroundColor(.white)
+                                            .frame(width: geo.size.width * 0.45, height: 50)
+                                            .background(LinearGradient(
+                                                colors: [Color(red: 0.42, green: 0.36, blue: 0.91),
+                                                         Color(red: 0.29, green: 0.23, blue: 0.71)],
+                                                startPoint: .top, endPoint: .bottom))
+                                            .cornerRadius(14)
+                                            .shadow(color: .purple.opacity(0.6), radius: 20)
+                                    }
+                                    .buttonStyle(.plain)
+                                    .disabled(username.count < 3 || password.count < 4)
+
+                                    Button(action: { isRegisterMode.toggle(); network.authError = nil }) {
+                                        Text(isRegisterMode ? "Уже есть аккаунт? Войти" : "Нет аккаунта? Создать")
+                                            .font(.system(size: 13, weight: .semibold))
+                                            .foregroundColor(.cyan)
+                                    }
+                                    .buttonStyle(.plain)
                                 }
-                                .buttonStyle(.plain)
                             }
+                            .padding(30)
                         }
-                        .padding(30)
+                        .frame(width: geo.size.width * 0.6, height: geo.size.height * 0.7) // Ограничиваем размер ScrollView
                         .background(Color.black.opacity(0.4))
                         .cornerRadius(24)
                         .overlay(RoundedRectangle(cornerRadius: 24).stroke(Color.purple.opacity(0.5), lineWidth: 2))
