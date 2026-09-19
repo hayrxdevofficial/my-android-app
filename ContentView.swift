@@ -89,6 +89,7 @@ struct ContentView: View {
     @State private var showAuthNeededAlert = false
     @State private var multiplayerGame = false
     @State private var profileUsername: String? = nil
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         ZStack {
@@ -119,6 +120,18 @@ struct ContentView: View {
         }
         .onChange(of: screen) { newScreen in
             handleScreenChange(newScreen)
+        }
+        .onChange(of: scenePhase) { phase in
+            switch phase {
+            case .active:
+                if !network.isConnected && network.hasInternet && network.isAuthenticated {
+                    network.connect()
+                }
+            case .background, .inactive:
+                network.flushLiveScoreNow()
+            @unknown default:
+                break
+            }
         }
         .onChange(of: network.incomingInvite) { newValue in
             if newValue != nil { showInviteAlert = true }
@@ -1586,9 +1599,9 @@ struct GameView: View {
             }
         }
 
-        // Live-save: каждые 150 мс отправляем актуальный score/coins
+        // Live-save: throttled внутри NetworkManager.submitScoreLive
         liveSendTimer += 1.0 / 60.0
-        if liveSendTimer >= 0.15 {
+        if liveSendTimer >= 0.1 {
             liveSendTimer = 0
             if let net = network, net.isAuthenticated {
                 net.submitScoreLive(score: score, earnedCoins: earnedCoins)
