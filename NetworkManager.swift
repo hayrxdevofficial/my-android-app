@@ -6,7 +6,7 @@ struct PlayerInfo: Identifiable, Equatable {
     let name: String
 }
 
-class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate {
+class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, URLSessionDelegate {
     private var webSocketTask: URLSessionWebSocketTask?
     private var session: URLSession!
 
@@ -31,6 +31,11 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate {
     let serverIP = "192.168.31.95"
     let serverPort = 8765
 
+    // WSS с самоподписанным сертификатом
+    // true  = wss:// (требует cert.pem на сервере)
+    // false = ws://  (обычное соединение)
+    var useSecure = true
+
     private var myPlayerID: String = ""
     private let myDisplayName: String
     private var pendingPeerID: String? = nil
@@ -49,7 +54,9 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate {
     }
 
     func connect() {
-        let urlString = "ws://\(serverIP):\(serverPort)"
+        let scheme = useSecure ? "wss" : "ws"
+        let urlString = "\(scheme)://\(serverIP):\(serverPort)"
+        print("🔌 Подключение к \(urlString)")
         guard let url = URL(string: urlString) else {
             connectionError = "Неверный адрес сервера"
             return
@@ -192,7 +199,6 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate {
 
             case "invite_answer":
                 if let accepted = json["accepted"] as? Bool, accepted {
-                    // Хост: приглашение принято — стартуем игру
                     if let peer = self.pendingPeerID {
                         self.peerID = peer
                         self.isHost = true
@@ -204,7 +210,6 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate {
                 if let payload = json["payload"] as? [String: Any],
                    let kind = payload["kind"] as? String {
                     if kind == "state" && !self.isHost {
-                        // Гость получает состояние от хоста
                         self.remoteEnemies = payload["enemies"] as? [[String: Any]] ?? []
                         self.remoteBullets = payload["bullets"] as? [[String: Any]] ?? []
                         if let hostY = payload["hostY"] as? Double {
@@ -214,7 +219,6 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate {
                         if let co = payload["coins"] as? Int { self.remoteCoins = co }
                         if let go = payload["gameOver"] as? Bool { self.remoteGameOver = go }
                     } else if kind == "clientY" && self.isHost {
-                        // Хост получает позицию гостя
                         if let y = payload["y"] as? Double {
                             self.remoteHeroY = CGFloat(y)
                         }
@@ -231,6 +235,7 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate {
         DispatchQueue.main.async {
             self.isConnected = true
             self.connectionError = nil
+            print("✅ WebSocket подключен")
         }
     }
 
@@ -240,6 +245,24 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate {
             if self.connectionError == nil {
                 self.connectionError = "Соединение закрыто"
             }
+            print("❌ WebSocket отключен")
         }
+    }
+
+    // MARK: - Доверие самоподписанному сертификату
+    func urlSession(_ session: URLSession,
+                    didReceive challenge: URLAuthenticationChallenge,
+                    completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
+
+        // Нас интересует только проверка сертификата сервера
+        guard challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
+              let serverTrust = challenge.protectionSpace.serverTrust else {
+            completionHandler(.performDefaultHandling, nil)
+            return
+        }
+
+        // Доверяем нашему сертификату (для разработки, не для продакшена)
+        let credential = URLCredential(trust: serverTrust)
+        completionHandler(.useCredential, credential)
     }
 }
