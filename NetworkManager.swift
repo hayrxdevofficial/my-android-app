@@ -47,7 +47,7 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
     private var pendingEarned: Int = 0
     private var roundActive: Bool = false
     private var lastLiveFlush: Date = .distantPast
-    private let liveFlushInterval: TimeInterval = 0.4   // throttle: не чаще 0.4 сек
+    private let liveFlushInterval: TimeInterval = 0.4
 
     @Published var isConnected = false
     @Published var onlinePlayers: [PlayerInfo] = []
@@ -251,9 +251,7 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
         sendJSON(["type": "start_round"])
     }
 
-    /// Throttle-отправка: не чаще одного раза в 0.4 сек.
-    /// Вызывается из GameView.tick() — то есть очень часто.
-    /// Внутри проверяем время и отправляем только если прошло >= 0.4 сек.
+    /// Throttle: не чаще одного раза в 0.4 сек.
     func submitScoreLive(score: Int, earnedCoins: Int) {
         guard roundActive else { return }
         pendingScore = score
@@ -266,12 +264,20 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
         }
     }
 
-    /// Финальная отправка — немедленно, без throttle.
+    /// Финальная отправка — немедленно.
     func submitScoreFinal(score: Int, earnedCoins: Int) {
         pendingScore = score
         pendingEarned = earnedCoins
         flushLiveScore()
         roundActive = false
+    }
+
+    /// Форс-сохранение при уходе в фон.
+    func flushLiveScoreNow() {
+        if pendingScore > 0 || pendingEarned > 0 {
+            flushLiveScore()
+        }
+        flushPendingMessages()
     }
 
     private func flushLiveScore() {
@@ -343,8 +349,14 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
               let string = String(data: data, encoding: .utf8) else { return }
 
         let isCritical = isCriticalMessage(dict)
+        let msgType = dict["type"] as? String ?? ""
 
-        if !isSocketOpen || webSocketTask == nil {
+        // Не отправляем игровые команды, пока не авторизованы
+        let needsAuth = ["submit_score", "start_round", "set_name", "get_players",
+                         "get_leaderboard", "get_profile", "invite",
+                         "invite_response", "game_data"].contains(msgType)
+
+        if !isSocketOpen || webSocketTask == nil || (needsAuth && !isAuthenticated) {
             if isCritical {
                 if pendingMessages.count < maxBufferSize {
                     print("⏳ [NET] Буферизую: \(string.prefix(80))")
@@ -441,7 +453,6 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
                 self.isSocketAlive = true
 
             case "ping":
-                // Сервер сам шлёт ping — отвечаем pong
                 self.sendJSON(["type": "pong"])
 
             case "need_auth":
@@ -476,6 +487,11 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
                         UserDefaults.standard.set(co, forKey: "cosmic_coins")
                     }
                     print("✅ [NET] Авторизован: \(display)")
+
+                    // Отправляем всё, что накопилось в буфере, ПОСЛЕ авторизации
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                        self.flushPendingMessages()
+                    }
                 }
 
             case "auth_error":
@@ -602,7 +618,11 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
                 self.sendJSON(["type": "token_login", "token": token])
             }
 
-            self.flushPendingMessages()
+            // Отправляем буфер только если уже авторизованы.
+            // Если нет — буфер уйдёт после auth_ok.
+            if self.isAuthenticated {
+                self.flushPendingMessages()
+            }
         }
     }
 
