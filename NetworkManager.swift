@@ -30,7 +30,7 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
     @Published var needAuth = false
     @Published var isConnecting = false
 
-    // Синхронизированные данные с сервера (для обновления UI)
+    // Синхронизированные данные с сервера
     @Published var serverBest: Int = 0
     @Published var serverCoins: Int = 0
 
@@ -166,7 +166,6 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
     }
     func sendName() { sendJSON(["type": "set_name"]) }
 
-    // ВАЖНО: coinsEarned — заработанные за раунд, а не всего
     func submitScore(_ score: Int, coinsEarned: Int) {
         sendJSON(["type": "submit_score", "score": score, "coins_earned": coinsEarned])
     }
@@ -264,7 +263,6 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
                     self.authError = nil
                     self.serverDown = false
                     self.sendName()
-                    // Обновляем синхронизированные значения
                     if let best = json["best_score"] as? Int {
                         self.serverBest = best
                         UserDefaults.standard.set(best, forKey: "cosmic_best")
@@ -283,8 +281,16 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
                     AuthStore.shared.clear()
                 }
 
+            case "banned":
+                if let msg = json["message"] as? String {
+                    self.authError = msg
+                    self.isAuthenticated = false
+                    AuthStore.shared.clear()
+                    self.disconnect()
+                    print("🚫 Аккаунт забанен: \(msg)")
+                }
+
             case "score_saved":
-                // Сервер вернул обновлённые значения после submit_score
                 if let best = json["best_score"] as? Int,
                    let coins = json["coins"] as? Int {
                     self.serverBest = best
@@ -364,14 +370,14 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
         }
     }
 
-    // MARK: - Доверие сертификату
+    // MARK: - Доверие сертификату (упрощено, без использования внутреннего API)
     func urlSession(_ session: URLSession,
                     didReceive challenge: URLAuthenticationChallenge,
                     completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
-        guard challenge.protectionScheme == URLAuthenticationChallenge.Scheme.https.value ||
-              challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
+        guard challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
               let serverTrust = challenge.protectionSpace.serverTrust else {
-            completionHandler(.performDefaultHandling, nil); return
+            completionHandler(.performDefaultHandling, nil)
+            return
         }
         completionHandler(.useCredential, URLCredential(trust: serverTrust))
     }
