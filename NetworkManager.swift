@@ -28,13 +28,15 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
     @Published var remoteCoins: Int = 0
     @Published var remoteGameOver = false
 
-    let serverIP = "192.168.31.95"
-    let serverPort = 8765
+    // ============================================================
+    // ПУБЛИЧНЫЙ URL от CloudPub (туннель на твой ПК)
+    // Меняй здесь, если CloudPub выдал новый адрес
+    // ============================================================
+    let serverURL = "wss://popularly-phlegmatic-tomcat.cloudpub.ru:443"
 
-    // WSS с самоподписанным сертификатом
-    // true  = wss:// (требует cert.pem на сервере)
-    // false = ws://  (обычное соединение)
-    var useSecure = true
+    // Для локального теста в одной Wi-Fi — раскомментируй строку ниже
+    // и закомментируй serverURL выше:
+    // let serverURL = "ws://192.168.31.95:8765"
 
     private var myPlayerID: String = ""
     private let myDisplayName: String
@@ -54,8 +56,7 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
     }
 
     func connect() {
-        let scheme = useSecure ? "wss" : "ws"
-        let urlString = "\(scheme)://\(serverIP):\(serverPort)"
+        let urlString = serverURL
         print("🔌 Подключение к \(urlString)")
         guard let url = URL(string: urlString) else {
             connectionError = "Неверный адрес сервера"
@@ -249,19 +250,17 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
         }
     }
 
-    // MARK: - Доверие самоподписанному сертификату
+    // MARK: - Доверие сертификату (на случай если CloudPub отдаст нестандартный)
     func urlSession(_ session: URLSession,
                     didReceive challenge: URLAuthenticationChallenge,
                     completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
 
-        // Нас интересует только проверка сертификата сервера
         guard challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
               let serverTrust = challenge.protectionSpace.serverTrust else {
             completionHandler(.performDefaultHandling, nil)
             return
         }
 
-        // Доверяем нашему сертификату (для разработки, не для продакшена)
         let credential = URLCredential(trust: serverTrust)
         completionHandler(.useCredential, credential)
     }
