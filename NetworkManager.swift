@@ -73,6 +73,11 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
     @Published var currentProfile: ProfileInfo? = nil
     @Published var profileError: String? = nil
 
+    // ✨ Админ-команды (ПАТЧ 3)
+    @Published var adminMessage: String? = nil
+    @Published var adminBroadcast: String? = nil
+    @Published var kickedReason: String? = nil
+
     @Published var gameStarted = false
     @Published var peerID: String? = nil
     @Published var isHost: Bool = false
@@ -469,6 +474,8 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
                    let display = json["display_name"] as? String {
                     AuthStore.shared.token = token
                     AuthStore.shared.username = name
+                    // ПАТЧ 2: сохраняем player_id с сервера
+                    self.myPlayerID = json["player_id"] as? String ?? ""
                     self.username = name
                     self.displayName = display
                     self.userID = uid
@@ -595,6 +602,26 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
                     }
                 }
 
+            // ✨ ПАТЧ 4: три case'а для админ-команд
+            case "admin_msg":
+                if let text = json["text"] as? String {
+                    self.adminMessage = text
+                    print("✉️ [NET] Сообщение от админа: \(text)")
+                }
+
+            case "admin_broadcast":
+                if let text = json["text"] as? String {
+                    self.adminBroadcast = text
+                    print("📢 [NET] Broadcast: \(text)")
+                }
+
+            case "kicked":
+                if let msg = json["message"] as? String {
+                    self.kickedReason = msg
+                    self.disconnect()
+                    print("👋 [NET] Кикнут: \(msg)")
+                }
+
             default:
                 print("⚠️ [NET] Неизвестный тип: \(type)")
             }
@@ -613,16 +640,14 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
             self.connectionError = nil
             self.serverDown = false
 
+            // ПАТЧ 1: убран premature flush — ждём auth_ok
             if self.isAuthenticated, let token = AuthStore.shared.token {
                 print("🔐 [NET] Авто-логин после reconnect")
+                // Сбрасываем локальный флаг — ждём auth_ok, потом флашим буфер.
+                self.isAuthenticated = false
                 self.sendJSON(["type": "token_login", "token": token])
             }
-
-            // Отправляем буфер только если уже авторизованы.
-            // Если нет — буфер уйдёт после auth_ok.
-            if self.isAuthenticated {
-                self.flushPendingMessages()
-            }
+            // Буфер уйдёт только после auth_ok (см. case "auth_ok")
         }
     }
 
