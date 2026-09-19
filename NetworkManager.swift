@@ -1,5 +1,6 @@
 import Foundation
 import UIKit
+import Network
 
 struct PlayerInfo: Identifiable, Equatable {
     let id: String
@@ -9,11 +10,17 @@ struct PlayerInfo: Identifiable, Equatable {
 class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, URLSessionDelegate {
     private var webSocketTask: URLSessionWebSocketTask?
     private var session: URLSession!
+    private let monitor = NWPathMonitor()
+    private let monitorQueue = DispatchQueue(label: "com.hayrx.networkMonitor")
 
     @Published var isConnected = false
     @Published var onlinePlayers: [PlayerInfo] = []
     @Published var incomingInvite: PlayerInfo? = nil
     @Published var connectionError: String? = nil
+
+    // Статусы сети
+    @Published var hasInternet = true
+    @Published var serverDown = false
 
     // Авторизация
     @Published var isAuthenticated = false
@@ -40,22 +47,56 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
 
     private var myPlayerID: String = ""
     private var pendingPeerID: String? = nil
+    private var isIntentionalDisconnect = false
 
     override init() {
         super.init()
         let config = URLSessionConfiguration.default
         session = URLSession(configuration: config, delegate: self, delegateQueue: OperationQueue.main)
+        startInternetMonitor()
     }
 
+    // MARK: - Мониторинг интернета
+    private func startInternetMonitor() {
+        monitor.pathUpdateHandler = { [weak self] path in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                let hasNet = path.status == .satisfied
+                let wasOffline = (self.hasInternet == false)
+
+                self.hasInternet = hasNet
+
+                if !hasNet {
+                    // Интернет пропал — сбрасываем serverDown
+                    self.serverDown = false
+                } else if wasOffline {
+                    // Интернет вернулся — пытаемся переподключиться
+                    print("🌐 Интернет вернулся, переподключаюсь...")
+                    self.serverDown = false
+                    self.connectionError = nil
+                    if !self.isConnected { self.connect() }
+                }
+            }
+        }
+        monitor.start(queue: monitorQueue)
+    }
+
+    // MARK: - Подключение
     func connect() {
         if isConnected || isConnecting { return }
+        guard hasInternet else {
+            connectionError = "Нет соединения с интернетом"
+            return
+        }
         print("🔌 Подключение к \(serverURL)")
         guard let url = URL(string: serverURL) else {
             connectionError = "Неверный адрес"
             return
         }
         connectionError = nil
+        serverDown = false
         isConnecting = true
+        isIntentionalDisconnect = false
         resetGameState()
         webSocketTask = session.webSocketTask(with: url)
         webSocketTask?.resume()
@@ -63,6 +104,7 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
     }
 
     func disconnect() {
+        isIntentionalDisconnect = true
         webSocketTask?.cancel(with: .normalClosure, reason: nil)
         webSocketTask = nil
         isConnected = false
@@ -70,6 +112,23 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
         onlinePlayers = []
         myPlayerID = ""
         resetGameState()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            self?.isIntentionalDisconnect = false
+        }
+    }
+
+    // Повторить подключение (для кнопок в error-экранах)
+    func retry() {
+        connectionError = nil
+        serverDown = false
+        isConnecting = false
+        isConnected = false
+        webSocketTask?.cancel(with: .goingAway, reason: nil)
+        webSocketTask = nil
+        // Небольшая пауза чтобы старый сокет закрылся
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+            self?.connect()
+        }
     }
 
     private func resetGameState() {
@@ -154,10 +213,21 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
             switch result {
             case .failure(let error):
                 DispatchQueue.main.async {
-                    self?.isConnected = false
-                    self?.isConnecting = false
-                    if self?.connectionError == nil {
-                        self?.connectionError = "Сервер недоступен"
+                    guard let self = self else { return }
+                    self.isConnected = false
+                    self.isConnecting = false
+
+                    if self.isIntentionalDisconnect {
+                        // Пользователь сам закрыл — молчим
+                        return
+                    }
+
+                    if !self.hasInternet {
+                        self.connectionError = "Нет соединения с интернетом"
+                        self.serverDown = false
+                    } else {
+                        self.connectionError = "Технические неполадки"
+                        self.serverDown = true
                     }
                     print("❌ WS: \(error.localizedDescription)")
                 }
@@ -197,6 +267,7 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
                     self.isAuthenticated = true
                     self.needAuth = false
                     self.authError = nil
+                    self.serverDown = false
                     self.sendName()
                     if let best = json["best_score"] as? Int {
                         UserDefaults.standard.set(best, forKey: "cosmic_best")
@@ -264,15 +335,23 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
             self.isConnected = true
             self.isConnecting = false
             self.connectionError = nil
+            self.serverDown = false
             print("✅ WebSocket подключен")
         }
     }
 
     func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didCloseWith closeCode: URLSessionWebSocketTask.CloseCode, reason: Data?) {
         DispatchQueue.main.async {
+            guard !self.isIntentionalDisconnect else { return }
             self.isConnected = false
             self.isConnecting = false
-            if self.connectionError == nil { self.connectionError = "Соединение закрыто" }
+            if !self.hasInternet {
+                self.connectionError = "Нет соединения с интернетом"
+                self.serverDown = false
+            } else {
+                self.connectionError = "Технические неполадки"
+                self.serverDown = true
+            }
         }
     }
 
