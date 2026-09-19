@@ -119,7 +119,7 @@ struct ContentView: View {
                     onGameOver: { s, c in
                         lastScore = s; lastCoins = c
                         if network.isAuthenticated {
-                            network.submitScore(s, coins: c)
+                            network.submitScore(s, coinsEarned: c)
                         }
                         withAnimation(.easeInOut(duration: 0.25)) { screen = .gameOver }
                     },
@@ -192,9 +192,22 @@ struct ContentView: View {
             if newValue != nil { showInviteAlert = true }
         }
         .onChange(of: network.gameStarted) { started in
-            if started && (screen == .friends || screen == .menu) {
+            guard started else { return }
+            let onFriends = (screen == .friends)
+            let onMenu = (screen == .menu)
+            if onFriends || onMenu {
                 multiplayerGame = true
                 withAnimation(.easeInOut(duration: 0.3)) { screen = .game }
+            }
+        }
+        .onChange(of: network.serverBest) { newBest in
+            if store.bestScore != newBest {
+                store.bestScore = newBest
+            }
+        }
+        .onChange(of: network.serverCoins) { newCoins in
+            if store.coins != newCoins {
+                store.coins = newCoins
             }
         }
         .alert("Хотите помочь игроку?", isPresented: $showInviteAlert) {
@@ -1028,7 +1041,11 @@ struct GameView: View {
     func triggerGameOver() {
         guard !isGameOver else { return }
         isGameOver = true
-        store.commit(score: score, coins: earnedCoins)
+        // Если играем онлайн — сервер сам пришлёт правильные значения через score_saved
+        // store.commit нужен только для оффлайн-игры
+        if !isMultiplayer {
+            store.commit(score: score, coins: earnedCoins)
+        }
         if isMultiplayer && isHost {
             network?.sendGameState(enemies: [], bullets: [], hostY: heroY,
                                    score: score, coins: earnedCoins, gameOver: true)
@@ -1038,7 +1055,9 @@ struct GameView: View {
 
     func exitGame() {
         if !isGameOver && (score > 0 || earnedCoins > 0) {
-            store.commit(score: score, coins: earnedCoins)
+            if !isMultiplayer {
+                store.commit(score: score, coins: earnedCoins)
+            }
         }
         onExitToMenu()
     }
