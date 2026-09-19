@@ -30,8 +30,23 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
     private let monitor = NWPathMonitor()
     private let monitorQueue = DispatchQueue(label: "com.hayrx.networkMonitor")
 
+    // Буфер
     private var pendingMessages: [String] = []
+    private let maxBufferSize = 50
     private var isSocketOpen = false
+    private var isSocketAlive = false
+
+    // Heartbeat
+    private var pingTimer: Timer?
+    private var lastPongTime: Date = Date()
+    private let pingInterval: TimeInterval = 25
+    private let pongTimeout: TimeInterval = 60
+
+    // Live-save
+    private var liveTimer: Timer?
+    private var pendingScore: Int = 0
+    private var pendingEarned: Int = 0
+    private var roundActive: Bool = false
 
     @Published var isConnected = false
     @Published var onlinePlayers: [PlayerInfo] = []
@@ -41,7 +56,6 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
     @Published var hasInternet = true
     @Published var serverDown = false
 
-    // Авторизация
     @Published var isAuthenticated = false
     @Published var username: String = ""
     @Published var displayName: String = ""
@@ -54,12 +68,10 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
     @Published var serverBest: Int = 0
     @Published var serverCoins: Int = 0
 
-    // Лидерборд и профили
     @Published var leaderboard: [LeaderboardEntry] = []
     @Published var currentProfile: ProfileInfo? = nil
     @Published var profileError: String? = nil
 
-    // Мультиплеер
     @Published var gameStarted = false
     @Published var peerID: String? = nil
     @Published var isHost: Bool = false
@@ -84,6 +96,12 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
         startInternetMonitor()
     }
 
+    deinit {
+        pingTimer?.invalidate()
+        liveTimer?.invalidate()
+    }
+
+    // MARK: - Интернет
     private func startInternetMonitor() {
         monitor.pathUpdateHandler = { [weak self] path in
             DispatchQueue.main.async {
@@ -94,7 +112,7 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
                 if !hasNet {
                     self.serverDown = false
                 } else if wasOffline {
-                    print("🌐 Интернет вернулся")
+                    print("🌐 [NET] Интернет вернулся")
                     self.serverDown = false
                     self.connectionError = nil
                     if !self.isConnected { self.connect() }
@@ -104,13 +122,13 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
         monitor.start(queue: monitorQueue)
     }
 
+    // MARK: - Подключение
     func connect() {
         if isConnected || isConnecting { return }
         guard hasInternet else {
             connectionError = "Нет соединения с интернетом"
             return
         }
-        print("🔌 [NET] Подключение к \(serverURL)")
         guard let url = URL(string: serverURL) else {
             connectionError = "Неверный адрес"
             return
@@ -120,21 +138,26 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
         isConnecting = true
         isIntentionalDisconnect = false
         isSocketOpen = false
-        pendingMessages.removeAll()
+        isSocketAlive = false
         resetGameState()
         webSocketTask = session.webSocketTask(with: url)
         webSocketTask?.resume()
         receiveMessage()
+        startHeartbeat()
     }
 
     func disconnect() {
         isIntentionalDisconnect = true
+        stopHeartbeat()
+        liveTimer?.invalidate()
+        liveTimer = nil
+        roundActive = false
         webSocketTask?.cancel(with: .normalClosure, reason: nil)
         webSocketTask = nil
         isConnected = false
         isConnecting = false
         isSocketOpen = false
-        pendingMessages.removeAll()
+        isSocketAlive = false
         onlinePlayers = []
         myPlayerID = ""
         resetGameState()
@@ -149,7 +172,8 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
         isConnecting = false
         isConnected = false
         isSocketOpen = false
-        pendingMessages.removeAll()
+        isSocketAlive = false
+        stopHeartbeat()
         webSocketTask?.cancel(with: .goingAway, reason: nil)
         webSocketTask = nil
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
@@ -184,41 +208,104 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
         disconnect()
     }
 
-    // ============ АВТОРИЗАЦИЯ ============
+    // MARK: - Heartbeat
+    private func startHeartbeat() {
+        pingTimer?.invalidate()
+        lastPongTime = Date()
+        pingTimer = Timer.scheduledTimer(withTimeInterval: pingInterval, repeats: true) { [weak self] _ in
+            self?.sendPing()
+        }
+    }
+
+    private func stopHeartbeat() {
+        pingTimer?.invalidate()
+        pingTimer = nil
+    }
+
+    private func sendPing() {
+        guard isSocketOpen, webSocketTask != nil else { return }
+        let elapsed = Date().timeIntervalSince(lastPongTime)
+        if elapsed > pongTimeout {
+            print("💀 [NET] Сокет мёртв \(Int(elapsed)) сек — переподключение")
+            isSocketOpen = false
+            isSocketAlive = false
+            isConnected = false
+            stopHeartbeat()
+            webSocketTask?.cancel(with: .goingAway, reason: nil)
+            webSocketTask = nil
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+                self?.connect()
+            }
+            return
+        }
+        sendJSON(["type": "ping"])
+    }
+
+    // MARK: - Round (live-save)
+    func startRound() {
+        guard isAuthenticated else { return }
+        roundActive = true
+        pendingScore = 0
+        pendingEarned = 0
+        print("📤 [NET] → start_round")
+        sendJSON(["type": "start_round"])
+    }
+
+    /// Live-сохранение: вызывай при каждом изменении score/earnedCoins.
+    /// Дебаунс 150 мс — если изменения идут подряд, уйдёт только последнее.
+    func submitScoreLive(score: Int, earnedCoins: Int) {
+        guard roundActive else { return }
+        pendingScore = score
+        pendingEarned = earnedCoins
+
+        liveTimer?.invalidate()
+        liveTimer = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: false) { [weak self] _ in
+            self?.flushLiveScore()
+        }
+    }
+
+    /// Финальная отправка — при выходе через домик или смерти.
+    /// Уходит немедленно, без ожидания дебаунса.
+    func submitScoreFinal(score: Int, earnedCoins: Int) {
+        guard roundActive else { return }
+        liveTimer?.invalidate()
+        liveTimer = nil
+        pendingScore = score
+        pendingEarned = earnedCoins
+        flushLiveScore()
+        roundActive = false
+    }
+
+    private func flushLiveScore() {
+        guard pendingScore > 0 || pendingEarned > 0 else { return }
+        print("📤 [NET] → submit_score(\(pendingScore), \(pendingEarned))")
+        sendJSON([
+            "type": "submit_score",
+            "score": pendingScore,
+            "coins_earned": pendingEarned
+        ])
+    }
+
+    // MARK: - Авторизация
     func register(username: String, password: String) {
         authError = nil
-        print("📤 [NET] → register(\(username))")
         sendJSON(["type": "register", "username": username, "password": password])
     }
     func login(username: String, password: String) {
         authError = nil
-        print("📤 [NET] → login(\(username))")
         sendJSON(["type": "login", "username": username, "password": password])
     }
     func tokenLogin() {
         guard let token = AuthStore.shared.token else { return }
-        print("📤 [NET] → token_login")
         sendJSON(["type": "token_login", "token": token])
     }
-    func sendName() {
-        print("📤 [NET] → set_name")
-        sendJSON(["type": "set_name"])
-    }
-
-    func submitScore(_ score: Int, coinsEarned: Int) {
-        print("📤 [NET] → submit_score(\(score), +\(coinsEarned))")
-        sendJSON(["type": "submit_score", "score": score, "coins_earned": coinsEarned])
-    }
+    func sendName() { sendJSON(["type": "set_name"]) }
 
     func refreshPlayerList() { sendJSON(["type": "get_players"]) }
-    func getLeaderboard() {
-        print("📤 [NET] → get_leaderboard")
-        sendJSON(["type": "get_leaderboard"])
-    }
+    func getLeaderboard() { sendJSON(["type": "get_leaderboard"]) }
     func getProfile(username: String) {
         currentProfile = nil
         profileError = nil
-        print("📤 [NET] → get_profile(\(username))")
         sendJSON(["type": "get_profile", "username": username])
     }
 
@@ -246,30 +333,61 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
         ]])
     }
 
+    // MARK: - Отправка
     private func sendJSON(_ dict: [String: Any]) {
         guard let data = try? JSONSerialization.data(withJSONObject: dict),
               let string = String(data: data, encoding: .utf8) else { return }
-        if !isSocketOpen || webSocketTask == nil {
-            print("⏳ [NET] Буферизую: \(string.prefix(80))")
-            pendingMessages.append(string)
+
+        let isCritical = isCriticalMessage(dict)
+
+        if !isSocketOpen || !isSocketAlive || webSocketTask == nil {
+            if isCritical {
+                if pendingMessages.count < maxBufferSize {
+                    print("⏳ [NET] Буферизую: \(string.prefix(80))")
+                    pendingMessages.append(string)
+                } else {
+                    pendingMessages.removeFirst()
+                    pendingMessages.append(string)
+                }
+            }
             return
         }
+
         webSocketTask?.send(.string(string)) { [weak self] error in
             if let error = error {
                 DispatchQueue.main.async {
-                    self?.connectionError = "Ошибка отправки: \(error.localizedDescription)"
+                    self?.connectionError = "Ошибка: \(error.localizedDescription)"
+                    if isCritical, let s = self, s.pendingMessages.count < s.maxBufferSize {
+                        s.pendingMessages.append(string)
+                    }
                 }
             }
         }
     }
 
+    private func isCriticalMessage(_ dict: [String: Any]) -> Bool {
+        guard let t = dict["type"] as? String else { return false }
+        return [
+            "register", "login", "token_login",
+            "submit_score", "start_round", "set_name",
+            "get_leaderboard", "get_profile",
+            "invite", "invite_response", "get_players"
+        ].contains(t)
+    }
+
     private func flushPendingMessages() {
-        guard isSocketOpen, !pendingMessages.isEmpty else { return }
+        guard isSocketOpen, isSocketAlive, !pendingMessages.isEmpty else { return }
         print("🚀 [NET] Отправляю буфер (\(pendingMessages.count))")
         let toSend = pendingMessages
         pendingMessages.removeAll()
         for string in toSend {
-            webSocketTask?.send(.string(string)) { _ in }
+            webSocketTask?.send(.string(string)) { [weak self] error in
+                if let error = error {
+                    DispatchQueue.main.async {
+                        self?.pendingMessages.append(string)
+                    }
+                }
+            }
         }
     }
 
@@ -279,27 +397,29 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
             case .failure(let error):
                 DispatchQueue.main.async {
                     guard let self = self else { return }
+                    print("❌ [NET] WS: \(error.localizedDescription)")
                     self.isConnected = false
                     self.isConnecting = false
                     self.isSocketOpen = false
+                    self.isSocketAlive = false
                     if self.isIntentionalDisconnect { return }
                     if !self.hasInternet {
                         self.connectionError = "Нет соединения с интернетом"
                         self.serverDown = false
                     } else {
-                        self.connectionError = "Технические неполадки"
-                        self.serverDown = true
+                        self.connectionError = "Восстанавливаю соединение…"
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+                            guard let self = self, !self.isIntentionalDisconnect, !self.isConnected else { return }
+                            print("🔄 [NET] Авто-переподключение")
+                            self.connect()
+                        }
                     }
-                    print("❌ [NET] WS: \(error.localizedDescription)")
                 }
             case .success(let message):
                 switch message {
-                case .string(let text):
-                    self?.handleMessage(text)
+                case .string(let text): self?.handleMessage(text)
                 case .data(let data):
-                    if let text = String(data: data, encoding: .utf8) {
-                        self?.handleMessage(text)
-                    }
+                    if let text = String(data: data, encoding: .utf8) { self?.handleMessage(text) }
                 @unknown default: break
                 }
                 self?.receiveMessage()
@@ -310,19 +430,21 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
     private func handleMessage(_ text: String) {
         guard let data = text.data(using: .utf8),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let type = json["type"] as? String else {
-            print("⚠️ [NET] Не распарсил: \(text.prefix(120))")
-            return
-        }
+              let type = json["type"] as? String else { return }
 
         DispatchQueue.main.async {
             switch type {
-            case "need_auth":
-                print("🔐 [NET] Сервер требует авторизацию")
-                self.needAuth = true
-                if AuthStore.shared.token != nil {
-                    self.tokenLogin()
+            case "pong":
+                self.lastPongTime = Date()
+                if !self.isSocketAlive {
+                    self.isSocketAlive = true
+                    print("💚 [NET] Сокет живой — flush буфер")
+                    self.flushPendingMessages()
                 }
+
+            case "need_auth":
+                self.needAuth = true
+                if AuthStore.shared.token != nil { self.tokenLogin() }
 
             case "auth_ok":
                 if let token = json["token"] as? String,
@@ -348,12 +470,10 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
                         self.serverCoins = co
                         UserDefaults.standard.set(co, forKey: "cosmic_coins")
                     }
-                    print("✅ [NET] Авторизован: \(display), verified=\(self.isVerified)")
                 }
 
             case "auth_error":
                 if let msg = json["message"] as? String {
-                    print("⛔️ [NET] auth_error: \(msg)")
                     self.authError = msg
                     self.isAuthenticated = false
                     AuthStore.shared.clear()
@@ -361,12 +481,14 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
 
             case "banned":
                 if let msg = json["message"] as? String {
-                    print("🚫 [NET] Бан: \(msg)")
                     self.authError = msg
                     self.isAuthenticated = false
                     AuthStore.shared.clear()
                     self.disconnect()
                 }
+
+            case "round_started":
+                print("🏁 [NET] Раунд начат")
 
             case "score_saved":
                 if let best = json["best_score"] as? Int,
@@ -375,7 +497,6 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
                     self.serverCoins = coins
                     UserDefaults.standard.set(best, forKey: "cosmic_best")
                     UserDefaults.standard.set(coins, forKey: "cosmic_coins")
-                    print("💾 [NET] Сохранено: рекорд \(best), монет \(coins)")
                 }
 
             case "player_list":
@@ -384,11 +505,10 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
                     for p in players {
                         guard let id = p["id"] as? String,
                               let name = p["name"] as? String else { continue }
-                        let v = (p["verified"] as? Bool) ?? false
-                        infos.append(PlayerInfo(id: id, name: name, verified: v))
+                        infos.append(PlayerInfo(id: id, name: name,
+                                                verified: (p["verified"] as? Bool) ?? false))
                     }
                     self.onlinePlayers = infos
-                    print("👥 [NET] Онлайн: \(infos.count)")
                 }
 
             case "leaderboard":
@@ -399,48 +519,40 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
                               let name = p["name"] as? String,
                               let score = p["score"] as? Int,
                               let coins = p["coins"] as? Int else { continue }
-                        let v = (p["verified"] as? Bool) ?? false
                         entries.append(LeaderboardEntry(
-                            rank: rank, name: name,
-                            score: score, coins: coins, verified: v
+                            rank: rank, name: name, score: score, coins: coins,
+                            verified: (p["verified"] as? Bool) ?? false
                         ))
                     }
                     self.leaderboard = entries
-                    print("🏆 [NET] Лидерборд: \(entries.count) игроков")
                 }
 
             case "profile":
                 if let name = json["username"] as? String,
                    let best = json["best_score"] as? Int,
                    let coins = json["coins"] as? Int {
-                    let v = (json["verified"] as? Bool) ?? false
                     self.currentProfile = ProfileInfo(
-                        username: name, bestScore: best,
-                        coins: coins, verified: v
+                        username: name, bestScore: best, coins: coins,
+                        verified: (json["verified"] as? Bool) ?? false
                     )
-                    print("👤 [NET] Профиль: \(name), verified=\(v)")
                 }
 
             case "profile_error":
-                if let msg = json["message"] as? String {
-                    self.profileError = msg
-                    print("⚠️ [NET] profile_error: \(msg)")
-                }
+                if let msg = json["message"] as? String { self.profileError = msg }
 
             case "invite_received":
                 if let fromID = json["from_id"] as? String,
                    let fromName = json["from_name"] as? String {
-                    let v = (json["from_verified"] as? Bool) ?? false
-                    self.incomingInvite = PlayerInfo(id: fromID, name: fromName, verified: v)
-                    print("📨 [NET] Приглашение от \(fromName)")
+                    self.incomingInvite = PlayerInfo(
+                        id: fromID, name: fromName,
+                        verified: (json["from_verified"] as? Bool) ?? false
+                    )
                 }
 
             case "invite_answer":
                 if let accepted = json["accepted"] as? Bool, accepted {
                     if let peer = self.pendingPeerID {
-                        self.peerID = peer
-                        self.isHost = true
-                        self.gameStarted = true
+                        self.peerID = peer; self.isHost = true; self.gameStarted = true
                     }
                 }
 
@@ -459,50 +571,57 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
                     }
                 }
 
-            default:
-                print("⚠️ [NET] Неизвестный тип: \(type)")
+            default: break
             }
         }
     }
 
-    // MARK: - URLSessionWebSocketDelegate
+    // MARK: - Delegate
     func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didOpenWithProtocol protocol: String?) {
         DispatchQueue.main.async {
             print("✅ [NET] WebSocket открыт")
             self.isConnected = true
             self.isConnecting = false
             self.isSocketOpen = true
+            self.isSocketAlive = false
+            self.lastPongTime = Date()
             self.connectionError = nil
             self.serverDown = false
-            self.flushPendingMessages()
+
+            if self.isAuthenticated, let token = AuthStore.shared.token {
+                self.sendJSON(["type": "token_login", "token": token])
+            }
         }
     }
 
     func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didCloseWith closeCode: URLSessionWebSocketTask.CloseCode, reason: Data?) {
         DispatchQueue.main.async {
-            print("🔌 [NET] WebSocket закрыт (\(closeCode.rawValue))")
+            print("🔌 [NET] WS закрыт (\(closeCode.rawValue))")
             self.isSocketOpen = false
-            guard !self.isIntentionalDisconnect else { return }
+            self.isSocketAlive = false
             self.isConnected = false
             self.isConnecting = false
+            guard !self.isIntentionalDisconnect else { return }
             if !self.hasInternet {
                 self.connectionError = "Нет соединения с интернетом"
                 self.serverDown = false
             } else {
-                self.connectionError = "Технические неполадки"
-                self.serverDown = true
+                self.connectionError = "Восстанавливаю соединение…"
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+                    guard let self = self, !self.isIntentionalDisconnect, !self.isConnected else { return }
+                    print("🔄 [NET] Авто-переподключение")
+                    self.connect()
+                }
             }
         }
     }
 
-    // MARK: - Доверие сертификату
     func urlSession(_ session: URLSession,
                     didReceive challenge: URLAuthenticationChallenge,
                     completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
         guard challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
               let serverTrust = challenge.protectionSpace.serverTrust else {
-            completionHandler(.performDefaultHandling, nil)
-            return
+            completionHandler(.performDefaultHandling, nil); return
         }
         completionHandler(.useCredential, URLCredential(trust: serverTrust))
     }
