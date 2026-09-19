@@ -154,6 +154,8 @@ jobs:
                 buildPhase: resources
             info:
               path: Info.plist
+              properties:
+                UILaunchScreen: {}
             settings:
               base:
                 PRODUCT_BUNDLE_IDENTIFIER: com.hayrx.cosmicsungarov
