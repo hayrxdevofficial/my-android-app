@@ -54,7 +54,7 @@ final class ImageLoader: ObservableObject {
 // MARK: - Экраны
 enum AppScreen { case loading, menu, account, friends, leaderboard, game, gameOver }
 
-// MARK: - Общая вью для имени с галочкой
+// MARK: - Имя с галочкой
 struct VerifiedName: View {
     let name: String
     let verified: Bool
@@ -161,6 +161,12 @@ struct ContentView: View {
                     loader: loader,
                     store: store,
                     network: multiplayerGame ? network : nil,
+                    onSaveProgress: { s, c in
+                        // Вызывается когда игрок выходит через домик
+                        if network.isAuthenticated && !multiplayerGame {
+                            network.submitScore(s, coinsEarned: c)
+                        }
+                    },
                     onGameOver: { s, c in
                         lastScore = s; lastCoins = c
                         if network.isAuthenticated {
@@ -231,6 +237,10 @@ struct ContentView: View {
             switch newScreen {
             case .loading, .menu, .account, .friends, .leaderboard:
                 music.playMenu()
+                // Обновляем лидерборд при возврате в меню, чтобы у всех были свежие данные
+                if network.isAuthenticated && network.isConnected {
+                    network.getLeaderboard()
+                }
             case .game:
                 music.playGame()
             case .gameOver:
@@ -358,7 +368,7 @@ struct MenuView: View {
             ZStack {
                 StarfieldBackground()
 
-                // ===== Кнопка Аккаунт (левый верх) =====
+                // Кнопка Аккаунт (левый верх)
                 VStack {
                     HStack {
                         Button(action: onAccount) {
@@ -389,9 +399,7 @@ struct MenuView: View {
                     Spacer()
                 }
 
-                // ===== Основной контент =====
                 HStack(spacing: 0) {
-                    // Герой
                     ZStack {
                         if let hero = loader.hero {
                             Image(uiImage: hero)
@@ -405,7 +413,6 @@ struct MenuView: View {
                     }
                     .frame(width: geo.size.width * 0.45)
 
-                    // Правая часть — заголовок и кнопки
                     VStack(spacing: 10) {
                         Spacer(minLength: 0)
 
@@ -419,7 +426,6 @@ struct MenuView: View {
 
                         Spacer(minLength: 0)
 
-                        // Играть + Друзья + Лидеры
                         HStack(spacing: 12) {
                             Button(action: onStart) {
                                 HStack(spacing: 10) {
@@ -474,7 +480,6 @@ struct MenuView: View {
                             .buttonStyle(.plain)
                         }
 
-                        // Рекорд / Монеты
                         HStack(spacing: 16) {
                             HStack(spacing: 6) {
                                 Image(systemName: "star.circle.fill")
@@ -523,7 +528,6 @@ struct AccountView: View {
                 StarfieldBackground()
 
                 VStack(spacing: 14) {
-                    // Шапка
                     HStack {
                         Button(action: onBack) {
                             Image(systemName: "chevron.left")
@@ -869,7 +873,6 @@ struct FriendsView: View {
         }
     }
 
-    // Строка игрока с контекстным меню (как правый клик в Windows)
     private func playerRow(player: PlayerInfo) -> some View {
         let cleanName = extractUsername(from: player.name)
 
@@ -886,7 +889,6 @@ struct FriendsView: View {
             }
             Spacer()
 
-            // Контекстное меню — три точки
             Menu {
                 Button {
                     network.sendInvite(to: player.id)
@@ -930,7 +932,6 @@ struct FriendsView: View {
         .padding(.top, 40)
     }
 
-    // "PlayerHayrX_Dev (HayrX_Dev_1)" → "HayrX_Dev"
     private func extractUsername(from display: String) -> String {
         if let openParen = display.firstIndex(of: "("),
            let closeParen = display.firstIndex(of: ")") {
@@ -956,7 +957,6 @@ struct LeaderboardView: View {
             ZStack {
                 StarfieldBackground()
                 VStack(spacing: 16) {
-                    // Шапка
                     HStack {
                         Button(action: onBack) {
                             Image(systemName: "chevron.left")
@@ -1028,7 +1028,6 @@ struct LeaderboardView: View {
             onOpenProfile(entry.name)
         } label: {
             HStack(spacing: 14) {
-                // Место
                 ZStack {
                     Circle()
                         .fill(medalColor(for: entry.rank))
@@ -1043,12 +1042,10 @@ struct LeaderboardView: View {
                     }
                 }
 
-                // Имя + галочка
                 VerifiedName(name: entry.name, verified: entry.verified, fontSize: 16, fontWeight: .bold)
 
                 Spacer()
 
-                // Очки и монеты
                 VStack(alignment: .trailing, spacing: 2) {
                     HStack(spacing: 4) {
                         Image(systemName: "star.circle.fill")
@@ -1120,7 +1117,6 @@ struct ProfileSheet: View {
         ZStack {
             StarfieldBackground()
             VStack(spacing: 20) {
-                // Шапка
                 HStack {
                     Spacer()
                     Button(action: { dismiss() }) {
@@ -1135,7 +1131,6 @@ struct ProfileSheet: View {
                 Spacer()
 
                 if let profile = network.currentProfile {
-                    // Аватар
                     ZStack {
                         Circle()
                             .fill(Color.purple.opacity(0.25))
@@ -1152,7 +1147,6 @@ struct ProfileSheet: View {
                         }
                     }
 
-                    // Имя + галочка
                     HStack(spacing: 8) {
                         Text(profile.username)
                             .font(.system(size: 26, weight: .heavy, design: .rounded))
@@ -1165,7 +1159,6 @@ struct ProfileSheet: View {
                         }
                     }
 
-                    // Статистика
                     HStack(spacing: 30) {
                         VStack(spacing: 4) {
                             Text("Рекорд")
@@ -1238,6 +1231,7 @@ struct GameView: View {
     @ObservedObject var loader: ImageLoader
     @ObservedObject var store: GameStore
     var network: NetworkManager? = nil
+    let onSaveProgress: (Int, Int) -> Void
     let onGameOver: (Int, Int) -> Void
     let onExitToMenu: () -> Void
 
@@ -1541,7 +1535,14 @@ struct GameView: View {
     func exitGame() {
         if !isGameOver && (score > 0 || earnedCoins > 0) {
             if !isMultiplayer {
+                // Одиночная игра — сохраняем локально и отправляем на сервер
                 store.commit(score: score, coins: earnedCoins)
+                onSaveProgress(score, earnedCoins)
+            }
+            // Co-op хост — сообщаем финальное состояние гостю
+            if isMultiplayer && isHost {
+                network?.sendGameState(enemies: [], bullets: [], hostY: heroY,
+                                       score: score, coins: earnedCoins, gameOver: true)
             }
         }
         onExitToMenu()
