@@ -18,7 +18,6 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
     @Published var incomingInvite: PlayerInfo? = nil
     @Published var connectionError: String? = nil
 
-    // Статусы сети
     @Published var hasInternet = true
     @Published var serverDown = false
 
@@ -30,6 +29,10 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
     @Published var authError: String? = nil
     @Published var needAuth = false
     @Published var isConnecting = false
+
+    // Синхронизированные данные с сервера (для обновления UI)
+    @Published var serverBest: Int = 0
+    @Published var serverCoins: Int = 0
 
     // Мультиплеер
     @Published var gameStarted = false
@@ -56,22 +59,18 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
         startInternetMonitor()
     }
 
-    // MARK: - Мониторинг интернета
     private func startInternetMonitor() {
         monitor.pathUpdateHandler = { [weak self] path in
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 let hasNet = path.status == .satisfied
                 let wasOffline = (self.hasInternet == false)
-
                 self.hasInternet = hasNet
 
                 if !hasNet {
-                    // Интернет пропал — сбрасываем serverDown
                     self.serverDown = false
                 } else if wasOffline {
-                    // Интернет вернулся — пытаемся переподключиться
-                    print("🌐 Интернет вернулся, переподключаюсь...")
+                    print("🌐 Интернет вернулся")
                     self.serverDown = false
                     self.connectionError = nil
                     if !self.isConnected { self.connect() }
@@ -81,7 +80,6 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
         monitor.start(queue: monitorQueue)
     }
 
-    // MARK: - Подключение
     func connect() {
         if isConnected || isConnecting { return }
         guard hasInternet else {
@@ -117,7 +115,6 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
         }
     }
 
-    // Повторить подключение (для кнопок в error-экранах)
     func retry() {
         connectionError = nil
         serverDown = false
@@ -125,7 +122,6 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
         isConnected = false
         webSocketTask?.cancel(with: .goingAway, reason: nil)
         webSocketTask = nil
-        // Небольшая пауза чтобы старый сокет закрылся
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
             self?.connect()
         }
@@ -150,6 +146,8 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
         username = ""
         displayName = ""
         userID = 0
+        serverBest = 0
+        serverCoins = 0
         disconnect()
     }
 
@@ -167,8 +165,10 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
         sendJSON(["type": "token_login", "token": token])
     }
     func sendName() { sendJSON(["type": "set_name"]) }
-    func submitScore(_ score: Int, coins: Int) {
-        sendJSON(["type": "submit_score", "score": score, "coins": coins])
+
+    // ВАЖНО: coinsEarned — заработанные за раунд, а не всего
+    func submitScore(_ score: Int, coinsEarned: Int) {
+        sendJSON(["type": "submit_score", "score": score, "coins_earned": coinsEarned])
     }
 
     func refreshPlayerList() { sendJSON(["type": "get_players"]) }
@@ -216,12 +216,7 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
                     guard let self = self else { return }
                     self.isConnected = false
                     self.isConnecting = false
-
-                    if self.isIntentionalDisconnect {
-                        // Пользователь сам закрыл — молчим
-                        return
-                    }
-
+                    if self.isIntentionalDisconnect { return }
                     if !self.hasInternet {
                         self.connectionError = "Нет соединения с интернетом"
                         self.serverDown = false
@@ -269,13 +264,16 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
                     self.authError = nil
                     self.serverDown = false
                     self.sendName()
+                    // Обновляем синхронизированные значения
                     if let best = json["best_score"] as? Int {
+                        self.serverBest = best
                         UserDefaults.standard.set(best, forKey: "cosmic_best")
                     }
                     if let co = json["coins"] as? Int {
+                        self.serverCoins = co
                         UserDefaults.standard.set(co, forKey: "cosmic_coins")
                     }
-                    print("✅ Авторизован: \(display)")
+                    print("✅ Авторизован: \(display), рекорд \(self.serverBest), монет \(self.serverCoins)")
                 }
 
             case "auth_error":
@@ -283,6 +281,17 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
                     self.authError = msg
                     self.isAuthenticated = false
                     AuthStore.shared.clear()
+                }
+
+            case "score_saved":
+                // Сервер вернул обновлённые значения после submit_score
+                if let best = json["best_score"] as? Int,
+                   let coins = json["coins"] as? Int {
+                    self.serverBest = best
+                    self.serverCoins = coins
+                    UserDefaults.standard.set(best, forKey: "cosmic_best")
+                    UserDefaults.standard.set(coins, forKey: "cosmic_coins")
+                    print("💾 Сервер сохранил: рекорд \(best), монет \(coins)")
                 }
 
             case "player_list":
@@ -359,7 +368,8 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
     func urlSession(_ session: URLSession,
                     didReceive challenge: URLAuthenticationChallenge,
                     completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
-        guard challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
+        guard challenge.protectionScheme == URLAuthenticationChallenge.Scheme.https.value ||
+              challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
               let serverTrust = challenge.protectionSpace.serverTrust else {
             completionHandler(.performDefaultHandling, nil); return
         }
