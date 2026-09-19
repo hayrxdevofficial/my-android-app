@@ -13,6 +13,10 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
     private let monitor = NWPathMonitor()
     private let monitorQueue = DispatchQueue(label: "com.hayrx.networkMonitor")
 
+    // Буфер сообщений, пока соединение не открыто
+    private var pendingMessages: [String] = []
+    private var isSocketOpen = false
+
     @Published var isConnected = false
     @Published var onlinePlayers: [PlayerInfo] = []
     @Published var incomingInvite: PlayerInfo? = nil
@@ -30,7 +34,6 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
     @Published var needAuth = false
     @Published var isConnecting = false
 
-    // Синхронизированные данные с сервера
     @Published var serverBest: Int = 0
     @Published var serverCoins: Int = 0
 
@@ -70,7 +73,7 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
                 if !hasNet {
                     self.serverDown = false
                 } else if wasOffline {
-                    print("🌐 Интернет вернулся")
+                    print("🌐 [NET] Интернет вернулся")
                     self.serverDown = false
                     self.connectionError = nil
                     if !self.isConnected { self.connect() }
@@ -86,7 +89,7 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
             connectionError = "Нет соединения с интернетом"
             return
         }
-        print("🔌 Подключение к \(serverURL)")
+        print("🔌 [NET] Подключение к \(serverURL)")
         guard let url = URL(string: serverURL) else {
             connectionError = "Неверный адрес"
             return
@@ -95,6 +98,8 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
         serverDown = false
         isConnecting = true
         isIntentionalDisconnect = false
+        isSocketOpen = false
+        pendingMessages.removeAll()
         resetGameState()
         webSocketTask = session.webSocketTask(with: url)
         webSocketTask?.resume()
@@ -107,6 +112,8 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
         webSocketTask = nil
         isConnected = false
         isConnecting = false
+        isSocketOpen = false
+        pendingMessages.removeAll()
         onlinePlayers = []
         myPlayerID = ""
         resetGameState()
@@ -120,6 +127,8 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
         serverDown = false
         isConnecting = false
         isConnected = false
+        isSocketOpen = false
+        pendingMessages.removeAll()
         webSocketTask?.cancel(with: .goingAway, reason: nil)
         webSocketTask = nil
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
@@ -154,19 +163,26 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
     // ============ АВТОРИЗАЦИЯ ============
     func register(username: String, password: String) {
         authError = nil
+        print("📤 [NET] → register(\(username))")
         sendJSON(["type": "register", "username": username, "password": password])
     }
     func login(username: String, password: String) {
         authError = nil
+        print("📤 [NET] → login(\(username))")
         sendJSON(["type": "login", "username": username, "password": password])
     }
     func tokenLogin() {
         guard let token = AuthStore.shared.token else { return }
+        print("📤 [NET] → token_login")
         sendJSON(["type": "token_login", "token": token])
     }
-    func sendName() { sendJSON(["type": "set_name"]) }
+    func sendName() {
+        print("📤 [NET] → set_name")
+        sendJSON(["type": "set_name"])
+    }
 
     func submitScore(_ score: Int, coinsEarned: Int) {
+        print("📤 [NET] → submit_score(\(score), +\(coinsEarned))")
         sendJSON(["type": "submit_score", "score": score, "coins_earned": coinsEarned])
     }
 
@@ -195,13 +211,43 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
         ]])
     }
 
+    // ============ ОТПРАВКА С БУФЕРОМ ============
     private func sendJSON(_ dict: [String: Any]) {
         guard let data = try? JSONSerialization.data(withJSONObject: dict),
-              let string = String(data: data, encoding: .utf8) else { return }
+              let string = String(data: data, encoding: .utf8) else {
+            print("❌ [NET] Не удалось сериализовать JSON")
+            return
+        }
+
+        if !isSocketOpen || webSocketTask == nil {
+            print("⏳ [NET] Сокет не открыт, буферизую: \(string.prefix(80))")
+            pendingMessages.append(string)
+            return
+        }
+
+        print("📤 [NET] Отправляю: \(string.prefix(120))")
         webSocketTask?.send(.string(string)) { [weak self] error in
             if let error = error {
                 DispatchQueue.main.async {
                     self?.connectionError = "Ошибка отправки: \(error.localizedDescription)"
+                    print("❌ [NET] Ошибка отправки: \(error.localizedDescription)")
+                }
+            }
+        }
+    }
+
+    private func flushPendingMessages() {
+        guard isSocketOpen, !pendingMessages.isEmpty else { return }
+        print("🚀 [NET] Отправляю буфер (\(pendingMessages.count) сообщений)")
+        let toSend = pendingMessages
+        pendingMessages.removeAll()
+        for string in toSend {
+            print("📤 [NET] Из буфера: \(string.prefix(120))")
+            webSocketTask?.send(.string(string)) { [weak self] error in
+                if let error = error {
+                    DispatchQueue.main.async {
+                        print("❌ [NET] Ошибка отправки буфера: \(error.localizedDescription)")
+                    }
                 }
             }
         }
@@ -215,6 +261,7 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
                     guard let self = self else { return }
                     self.isConnected = false
                     self.isConnecting = false
+                    self.isSocketOpen = false
                     if self.isIntentionalDisconnect { return }
                     if !self.hasInternet {
                         self.connectionError = "Нет соединения с интернетом"
@@ -223,13 +270,18 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
                         self.connectionError = "Технические неполадки"
                         self.serverDown = true
                     }
-                    print("❌ WS: \(error.localizedDescription)")
+                    print("❌ [NET] WS ошибка: \(error.localizedDescription)")
                 }
             case .success(let message):
                 switch message {
-                case .string(let text): self?.handleMessage(text)
+                case .string(let text):
+                    print("📥 [NET] Получено: \(text.prefix(150))")
+                    self?.handleMessage(text)
                 case .data(let data):
-                    if let text = String(data: data, encoding: .utf8) { self?.handleMessage(text) }
+                    if let text = String(data: data, encoding: .utf8) {
+                        print("📥 [NET] Получено (data): \(text.prefix(150))")
+                        self?.handleMessage(text)
+                    }
                 @unknown default: break
                 }
                 self?.receiveMessage()
@@ -240,13 +292,21 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
     private func handleMessage(_ text: String) {
         guard let data = text.data(using: .utf8),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let type = json["type"] as? String else { return }
+              let type = json["type"] as? String else {
+            print("⚠️ [NET] Не распарсил JSON: \(text.prefix(120))")
+            return
+        }
 
         DispatchQueue.main.async {
             switch type {
             case "need_auth":
+                print("🔐 [NET] Сервер требует авторизацию")
                 self.needAuth = true
-                if AuthStore.shared.token != nil { self.tokenLogin() }
+                if AuthStore.shared.token != nil {
+                    self.tokenLogin()
+                } else {
+                    print("ℹ️ [NET] Токена нет — ждём ввода имени/пароля")
+                }
 
             case "auth_ok":
                 if let token = json["token"] as? String,
@@ -271,11 +331,12 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
                         self.serverCoins = co
                         UserDefaults.standard.set(co, forKey: "cosmic_coins")
                     }
-                    print("✅ Авторизован: \(display), рекорд \(self.serverBest), монет \(self.serverCoins)")
+                    print("✅ [NET] Авторизован: \(display)")
                 }
 
             case "auth_error":
                 if let msg = json["message"] as? String {
+                    print("⛔️ [NET] Ошибка авторизации: \(msg)")
                     self.authError = msg
                     self.isAuthenticated = false
                     AuthStore.shared.clear()
@@ -287,7 +348,7 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
                     self.isAuthenticated = false
                     AuthStore.shared.clear()
                     self.disconnect()
-                    print("🚫 Аккаунт забанен: \(msg)")
+                    print("🚫 [NET] Аккаунт забанен: \(msg)")
                 }
 
             case "score_saved":
@@ -297,7 +358,7 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
                     self.serverCoins = coins
                     UserDefaults.standard.set(best, forKey: "cosmic_best")
                     UserDefaults.standard.set(coins, forKey: "cosmic_coins")
-                    print("💾 Сервер сохранил: рекорд \(best), монет \(coins)")
+                    print("💾 [NET] Сервер сохранил: рекорд \(best), монет \(coins)")
                 }
 
             case "player_list":
@@ -339,7 +400,8 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
                     }
                 }
 
-            default: break
+            default:
+                print("⚠️ [NET] Неизвестный тип: \(type)")
             }
         }
     }
@@ -347,16 +409,21 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
     // MARK: - URLSessionWebSocketDelegate
     func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didOpenWithProtocol protocol: String?) {
         DispatchQueue.main.async {
+            print("✅ [NET] WebSocket открыт")
             self.isConnected = true
             self.isConnecting = false
+            self.isSocketOpen = true
             self.connectionError = nil
             self.serverDown = false
-            print("✅ WebSocket подключен")
+            // Отправляем то, что копилось
+            self.flushPendingMessages()
         }
     }
 
     func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didCloseWith closeCode: URLSessionWebSocketTask.CloseCode, reason: Data?) {
         DispatchQueue.main.async {
+            print("🔌 [NET] WebSocket закрыт, код: \(closeCode.rawValue)")
+            self.isSocketOpen = false
             guard !self.isIntentionalDisconnect else { return }
             self.isConnected = false
             self.isConnecting = false
@@ -370,7 +437,7 @@ class NetworkManager: NSObject, ObservableObject, URLSessionWebSocketDelegate, U
         }
     }
 
-    // MARK: - Доверие сертификату (упрощено, без использования внутреннего API)
+    // MARK: - Доверие сертификату
     func urlSession(_ session: URLSession,
                     didReceive challenge: URLAuthenticationChallenge,
                     completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
