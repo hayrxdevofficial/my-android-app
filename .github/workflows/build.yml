@@ -18,6 +18,7 @@ jobs:
         cp MyApp.swift CosmicSungarov/MyApp.swift
         cp NetworkManager.swift CosmicSungarov/NetworkManager.swift
         cp MusicManager.swift CosmicSungarov/MusicManager.swift
+        cp AuthStore.swift CosmicSungarov/AuthStore.swift
 
         # ====== Скачиваем все ассеты в бандл ======
         ASSETS_BASE="https://raw.githubusercontent.com/hayrxdevofficial/my-android-app/main"
@@ -26,7 +27,7 @@ jobs:
         mkdir -p CosmicSungarov/Assets.xcassets/AppIcon.appiconset
         curl -L "$ASSETS_BASE/icon.png" -o CosmicSungarov/Assets.xcassets/AppIcon.appiconset/icon.png
 
-        # Игровые картинки — в корень бандла (не в Assets.xcassets)
+        # Игровые картинки — в корень бандла
         curl -L "$ASSETS_BASE/sungarov.png" -o CosmicSungarov/sungarov.png
         curl -L "$ASSETS_BASE/bad.png"      -o CosmicSungarov/bad.png
         curl -L "$ASSETS_BASE/pula.png"     -o CosmicSungarov/pula.png
@@ -139,6 +140,7 @@ jobs:
               - ContentView.swift
               - NetworkManager.swift
               - MusicManager.swift
+              - AuthStore.swift
               - path: Assets.xcassets
               - path: sungarov.png
                 buildPhase: resources
