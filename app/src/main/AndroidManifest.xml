@@ -1,0 +1,8 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.INTERNET" />
+    <application android:theme="@android:style/Theme.Material.Light.NoActionBar" android:label="3D Animator Studio" android:usesCleartextTraffic="false">
+        <activity android:name=".MainActivity" android:screenOrientation="sensorLandscape" android:configChanges="orientation|screenSize|keyboardHidden" android:exported="true">
+            <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter>
+        </activity>
+    </application>
+</manifest>

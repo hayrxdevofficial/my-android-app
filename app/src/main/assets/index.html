@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>3D Animator Studio</title>
+<style>
+:root{--bg:#0b1020;--panel:#111a2e;--line:#25334e;--muted:#91a0ba;--text:#eef4ff;--lime:#b8f34a;--cyan:#55d9e8}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px Inter,system-ui,sans-serif;overflow:hidden}
+header{height:54px;display:flex;align-items:center;justify-content:space-between;padding:0 16px;border-bottom:1px solid var(--line);background:#0e1628}
+.brand{font-weight:850;font-size:17px;letter-spacing:.2px}.brand b{color:var(--lime)}.actions{display:flex;gap:8px;align-items:center}
+button,.filebtn,select{border:1px solid var(--line);background:#18243b;color:var(--text);border-radius:10px;padding:9px 12px;font-weight:650;font-size:12px}
+button.primary{background:var(--lime);color:#16210a;border:0}button:active{transform:scale(.97)}button:disabled{opacity:.4}
+main{height:calc(100dvh - 54px);display:grid;grid-template-columns:220px 1fr 230px;grid-template-rows:minmax(0,1fr) 155px;gap:10px;padding:10px}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;overflow:auto;padding:13px}
+h3{margin:0 0 13px;font-size:12px;text-transform:uppercase;letter-spacing:1px;color:var(--muted)}
+.tool{display:flex;align-items:center;gap:10px;width:100%;margin:5px 0;text-align:left}.tool span:first-child{font-size:18px;width:24px}
+#viewport{position:relative;min-width:0;border:1px solid var(--line);border-radius:14px;overflow:hidden;background:radial-gradient(ellipse at 50% 40%,#263959,#10182b 68%)}
+#view{width:100%;height:100%;display:block}.hud{position:absolute;left:14px;top:12px;display:flex;gap:7px;pointer-events:none}.pill{background:#0b1224cc;border:1px solid #435575;border-radius:30px;padding:6px 10px;color:#c7d6ee;font-size:11px}
+#empty{position:absolute;inset:0;display:grid;place-content:center;text-align:center;pointer-events:none;color:#dce8ff}#empty strong{font-size:18px}#empty small{color:#a8b7d1;margin-top:7px}
+.prop{margin:13px 0}.prop label{display:flex;justify-content:space-between;color:#c5d0e4;font-size:12px;margin-bottom:7px}input[type=range]{width:100%;accent-color:var(--lime)}
+select{width:100%;padding:10px}.hint{font-size:11px;color:var(--muted);line-height:1.5}
+#timeline{grid-column:1/4;display:grid;grid-template-columns:180px 1fr;gap:12px}.trackarea{min-width:0}.trackhead{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}.ruler{display:flex;justify-content:space-between;color:var(--muted);font-size:10px;padding:0 6px 7px}
+.track{height:34px;border-radius:8px;background:repeating-linear-gradient(90deg,#1b2942 0,#1b2942 1px,transparent 1px,transparent 8.33%);border:1px solid #2a3a57;position:relative;margin:5px 0}
+.clip{position:absolute;left:3%;width:34%;height:22px;top:5px;border-radius:5px;background:#a4db39;color:#17230b;font-size:10px;font-weight:800;padding:4px 8px}
+.playhead{position:absolute;top:-7px;bottom:-5px;left:38%;width:2px;background:#ff7474;z-index:2}
+#modelList{margin-top:8px}.modelrow{padding:8px;border:1px solid var(--line);border-radius:9px;margin:6px 0;font-size:12px;display:flex;justify-content:space-between}
+@media(max-width:720px){main{grid-template-columns:145px 1fr;grid-template-rows:minmax(0,1fr) 130px 155px}#props{grid-column:1/3;display:flex;gap:15px;overflow:auto}#props>*{min-width:140px}#timeline{grid-column:1/3;grid-template-columns:115px 1fr}.panel{padding:9px}header{padding:0 8px}.brand{font-size:14px}.actions button{padding:8px}}
+</style></head><body>
+<header><div class="brand">✦ <b>3D</b> ANIMATOR STUDIO</div><div class="actions"><button id="addDemo">＋ Персонаж</button><button id="fight">⚔ Битва</button><button class="primary" id="save">Сохранить сцену</button></div></header>
+<main>
+<aside class="panel"><h3>Библиотека</h3>
+<label class="filebtn" style="display:block;text-align:center;cursor:pointer">⬆ Импорт GLB / GLTF<input id="file" type="file" accept=".glb,.gltf,.bin" hidden></label>
+<div style="height:12px"></div><h3>Добавить в сцену</h3>
+<button class="tool" id="addDemo2"><span>🧍</span> Тестовый персонаж</button>
+<button class="tool" id="addCube"><span>🧊</span> Куб</button><button class="tool" id="addSphere"><span>🔵</span> Сфера</button>
+<div id="modelList"></div><p class="hint">Поддерживаются модели GLB и GLTF с готовыми скелетными анимациями.</p>
+</aside>
+<section id="viewport"><canvas id="view"></canvas><div class="hud"><span class="pill">● СЦЕНА 01</span><span class="pill" id="objectCount">0 объектов</span></div><div id="empty"><strong>Твоя 3D-сцена</strong><small>Добавь персонажа или импортируй свою модель</small></div></section>
+<aside class="panel" id="props"><h3>Анимация и свойства</h3>
+<div class="prop"><label>Выбрать анимацию</label><select id="anim"><option value="">Нет анимации</option></select></div>
+<div class="prop"><label>Скорость <b id="speedVal">1.0×</b></label><input id="speed" type="range" min=".1" max="2.5" step=".1" value="1"></div>
+<div class="prop"><label>Поворот <b id="rotVal">0°</b></label><input id="rotation" type="range" min="0" max="360" value="0"></div>
+<div class="prop"><label>Масштаб <b id="scaleVal">1.0</b></label><input id="scale" type="range" min=".3" max="2.5" step=".1" value="1"></div>
+<div class="prop"><label>Позиция X <b id="posVal">0</b></label><input id="pos" type="range" min="-5" max="5" step=".1" value="0"></div>
+<button class="primary" id="play" style="width:100%">▶ Воспроизвести</button>
+<button id="stop" style="width:100%;margin-top:7px">■ Стоп</button>
+<p class="hint">Выбери импортированную модель, чтобы управлять её клипами анимации.</p>
+</aside>
+<section class="panel" id="timeline"><div><h3>Таймлайн</h3><div style="font-size:12px;color:var(--muted)">Дорожка персонажа</div><div style="margin-top:9px;font-weight:800;color:var(--lime)">● Анимация</div></div><div class="trackarea"><div class="trackhead"><span style="font-size:12px">Последовательность кадров</span><span class="hint" id="timeLabel">00:00 / 00:10</span></div><div class="ruler"><span>0s</span><span>2s</span><span>4s</span><span>6s</span><span>8s</span><span>10s</span></div><div class="track"><div class="clip">Анимация персонажа</div><div class="playhead" id="head"></div></div><div class="track"><div class="clip" style="background:#56cbd7;left:15%;width:25%">Движение</div></div><div class="hint">Дорожки сцены · перемещение и действия</div></div></section>
+</main>
+<script type="module">
+import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';
+import {OrbitControls} from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/controls/OrbitControls.js';
+import {GLTFLoader} from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/loaders/GLTFLoader.js';
+import {GLTFExporter} from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/exporters/GLTFExporter.js';
+const canvas=document.querySelector('#view'), renderer=new THREE.WebGLRenderer({canvas,antialias:true,alpha:true});
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));renderer.setSize(canvas.clientWidth,canvas.clientHeight,false);renderer.outputColorSpace=THREE.SRGBColorSpace;
+const scene=new THREE.Scene();scene.background=new THREE.Color(0x111b30);
+const camera=new THREE.PerspectiveCamera(45,1,.1,100);camera.position.set(6,5,8);
+const controls=new OrbitControls(camera,renderer.domElement);controls.target.set(0,1,0);controls.enableDamping=true;
+scene.add(new THREE.HemisphereLight(0xc9e3ff,0x28334a,2));const light=new THREE.DirectionalLight(0xffffff,2.4);light.position.set(4,8,5);scene.add(light);
+const grid=new THREE.GridHelper(20,40,0x536887,0x263750);scene.add(grid);
+const floor=new THREE.Mesh(new THREE.PlaneGeometry(200,200),new THREE.MeshStandardMaterial({color:0x151f32,roughness:1}));floor.rotation.x=-Math.PI/2;floor.position.y=-.015;scene.add(floor);
+const clock=new THREE.Clock(),loader=new GLTFLoader(),mixers=[];let objects=[],selected=null,playing=false,elapsed=0;
+function resize(){const w=canvas.clientWidth,h=canvas.clientHeight;if(!w||!h)return;renderer.setSize(w,h,false);camera.aspect=w/h;camera.updateProjectionMatrix()}
+new ResizeObserver(resize).observe(canvas);
+function makeCharacter(){const g=new THREE.Group();const mat=new THREE.MeshStandardMaterial({color:0xb8ef4c,roughness:.7}),dark=new THREE.MeshStandardMaterial({color:0x26334b});
+function part(geo,m,x,y,z){const o=new THREE.Mesh(geo,m);o.position.set(x,y,z);g.add(o);return o}
+part(new THREE.CapsuleGeometry(.34,.65,5,10),mat,0,1.15,0);part(new THREE.SphereGeometry(.27,20,16),new THREE.MeshStandardMaterial({color:0xffc99c}),0,1.85,0);
+part(new THREE.BoxGeometry(.16,.62,.18),mat,-.43,1.2,0).rotation.z=-.25;part(new THREE.BoxGeometry(.16,.62,.18),mat,.43,1.2,0).rotation.z=.25;
+part(new THREE.BoxGeometry(.2,.65,.22),dark,-.16,.42,0);part(new THREE.BoxGeometry(.2,.65,.22),dark,.16,.42,0);
+const ring=new THREE.Mesh(new THREE.TorusGeometry(.55,.018,8,40),new THREE.MeshBasicMaterial({color:0x55d9e8}));ring.rotation.x=Math.PI/2;ring.position.y=.03;g.add(ring);return g}
+function addObject(obj,name,clips=[]){scene.add(obj);const entry={obj,name,mixer:null,actions:[],clips};if(clips.length){entry.mixer=new THREE.AnimationMixer(obj);entry.actions=clips.map(c=>entry.mixer.clipAction(c));mixers.push(entry.mixer)}objects.push(entry);select(entry);updateList();return entry}
+function select(e){selected=e;document.querySelector('#empty').style.display='none';const s=document.querySelector('#anim');s.innerHTML='<option value="">Нет анимации</option>';e.actions.forEach((a,i)=>{const o=document.createElement('option');o.value=i;o.textContent=e.clips[i].name||'Анимация '+(i+1);s.append(o)});document.querySelector('#rotation').value=Math.round(THREE.MathUtils.radToDeg(e.obj.rotation.y));document.querySelector('#scale').value=e.obj.scale.x;document.querySelector('#pos').value=e.obj.position.x;document.querySelector('#rotVal').textContent=Math.round(THREE.MathUtils.radToDeg(e.obj.rotation.y))+'°';document.querySelector('#scaleVal').textContent=e.obj.scale.x.toFixed(1);document.querySelector('#posVal').textContent=e.obj.position.x.toFixed(1)}
+function updateList(){document.querySelector('#modelList').innerHTML=objects.map((e,i)=>'<div class="modelrow" data-i="'+i+'"><span>◈ '+e.name+'</span><span>'+(selected===e?'●':'')+'</span></div>').join('');document.querySelectorAll('.modelrow').forEach(el=>el.onclick=()=>select(objects[+el.dataset.i]));document.querySelector('#objectCount').textContent=objects.length+' объектов'}
+function demo(){const g=makeCharacter();addObject(g,'Персонаж '+(objects.length+1))}
+document.querySelector('#addDemo').onclick=demo;document.querySelector('#addDemo2').onclick=demo;
+document.querySelector('#addCube').onclick=()=>{const o=new THREE.Mesh(new THREE.BoxGeometry(1,1,1),new THREE.MeshStandardMaterial({color:0x58cbd8}));o.position.y=.5;addObject(o,'Куб')};
+document.querySelector('#addSphere').onclick=()=>{const o=new THREE.Mesh(new THREE.SphereGeometry(.6,32,20),new THREE.MeshStandardMaterial({color:0xffa64d}));o.position.y=.6;addObject(o,'Сфера')};
+document.querySelector('#file').onchange=async e=>{const f=e.target.files[0];if(!f)return;try{const buf=await f.arrayBuffer();loader.parse(buf,'',g=>{const obj=g.scene;const box=new THREE.Box3().setFromObject(obj);const size=box.getSize(new THREE.Vector3());obj.position.y-=box.min.y;const max=Math.max(size.x,size.y,size.z);if(max>0)obj.scale.setScalar(2.2/max);addObject(obj,f.name,g.animations);},err=>alert('Не удалось прочитать модель: '+err.message))}catch(err){alert('Ошибка импорта: '+err.message)}e.target.value=''};
+document.querySelector('#anim').onchange=e=>{if(!selected)return;selected.actions.forEach(a=>a.stop());const i=+e.target.value;if(e.target.value!==''&&selected.actions[i]){selected.actions[i].reset().play();playing=true;document.querySelector('#play').textContent='Ⅱ Пауза'}};
+document.querySelector('#speed').oninput=e=>{document.querySelector('#speedVal').textContent=(+e.target.value).toFixed(1)+'×';if(selected?.mixer)selected.mixer.timeScale=+e.target.value};
+document.querySelector('#rotation').oninput=e=>{if(selected)selected.obj.rotation.y=THREE.MathUtils.degToRad(+e.target.value);document.querySelector('#rotVal').textContent=e.target.value+'°'};
+document.querySelector('#scale').oninput=e=>{if(selected)selected.obj.scale.setScalar(+e.target.value);document.querySelector('#scaleVal').textContent=(+e.target.value).toFixed(1)};
+document.querySelector('#pos').oninput=e=>{if(selected)selected.obj.position.x=+e.target.value;document.querySelector('#posVal').textContent=(+e.target.value).toFixed(1)};
+document.querySelector('#play').onclick=()=>{playing=!playing;document.querySelector('#play').textContent=playing?'Ⅱ Пауза':'▶ Воспроизвести';if(playing&&selected?.actions.length){const a=selected.actions[+document.querySelector('#anim').value||0];a?.play()}};
+document.querySelector('#stop').onclick=()=>{playing=false;mixers.forEach(m=>m.stopAllAction());document.querySelector('#play').textContent='▶ Воспроизвести'};
+document.querySelector('#fight').onclick=()=>{if(objects.length<2){demo();demo()}objects[0].obj.position.x=-2;objects[1].obj.position.x=2;objects[0].obj.rotation.y=Math.PI/2;objects[1].obj.rotation.y=-Math.PI/2;select(objects[0]);alert('Сцена битвы создана! Добавь анимации атаки импортированным персонажам.')};
+document.querySelector('#save').onclick=()=>{const data={title:'Моя 3D-сцена',objects:objects.map(e=>({name:e.name,position:e.obj.position.toArray(),rotation:e.obj.rotation.toArray(),scale:e.obj.scale.toArray(),animations:e.clips.map(c=>c.name)}))};const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='my-3d-scene.json';a.click();URL.revokeObjectURL(a.href)};
+function animate(){requestAnimationFrame(animate);const dt=clock.getDelta();if(playing){elapsed+=dt;mixers.forEach(m=>m.update(dt));document.querySelector('#head').style.left=(3+(elapsed%10)*9.3)+'%';document.querySelector('#timeLabel').textContent='00:'+String(Math.floor(elapsed%60)).padStart(2,'0')+' / 00:10'}controls.update();renderer.render(scene,camera)}
+demo();animate();
+</script></body></html>
