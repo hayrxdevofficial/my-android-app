@@ -5,8 +5,6 @@ on:
   pull_request:
     branches: [ main ]
   workflow_dispatch:
-env:
-  ANDROID_HOME: /usr/local/lib/android/sdk
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -16,10 +14,12 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-      - name: Accept Android SDK licenses and install native toolchain
-        run: |
-          yes | sdkmanager --licenses >/dev/null
-          sdkmanager 'platforms;android-35' 'build-tools;35.0.0' 'ndk;27.2.12479018' 'cmake;3.22.1'
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          packages: 'platform-tools'
+      - name: Install Android platform and native toolchain
+        run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0' 'ndk;27.2.12479018' 'cmake;3.22.1'
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
