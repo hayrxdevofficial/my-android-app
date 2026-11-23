@@ -479,11 +479,23 @@ bool runVirtualMemorySelfTest(std::string& message) {
         std::memcmp(output, bytes, sizeof(output)) != 0 ||
         as.write(base, bytes, 1) ||
         as.fetch(base + kPageSize, output, 1) ||
+        as.cr3() == 0 ||
         !as.unmap(base, kPageSize) || as.isMapped(base)) {
         message = "Virtual memory mapping/protection/fault test failed";
         return false;
     }
-    message = "Virtual memory map, read/execute permissions, write protection and unmap tests passed";
+    X64PageTables tables;
+    std::uint64_t translated = 0;
+    if (tables.cr3() == 0 ||
+        !tables.map(0x400000, 0x9000, MemRead | MemExecute) ||
+        !tables.translate(0x400123, MemExecute, translated) || translated != 0x9123 ||
+        tables.translate(0x400000, MemWrite, translated) ||
+        tables.unmap(0x400000) ||
+        tables.translate(0x400000, MemRead, translated)) {
+        message = "Four-level page-table walk or CR3 permission test failed";
+        return false;
+    }
+    message = "Virtual memory permissions, four-level page walks, CR3 translation and unmap tests passed";
     return true;
 }
 
