@@ -13,6 +13,7 @@ namespace {
 std::mutex gElfRuntimeMutex;
 std::unique_ptr<pshere::GuestMemory> gLoadedGuestMemory;
 std::unique_ptr<pshere::VirtualAddressSpace> gLoadedAddressSpace;
+std::unique_ptr<pshere::CpuState> gLoadedCpu;
 }
 
 extern "C" JNIEXPORT jstring JNICALL
@@ -80,6 +81,9 @@ Java_com_hayrx_ps4emu_MainActivity_nativeLoadElf(JNIEnv* env, jobject, jbyteArra
         std::lock_guard<std::mutex> lock(gElfRuntimeMutex);
         gLoadedAddressSpace = std::move(addressSpace);
         gLoadedGuestMemory = std::move(memory);
+        gLoadedCpu = std::make_unique<pshere::CpuState>();
+        gLoadedCpu->rip = loaded.entryPoint;
+        gLoadedCpu->registers[pshere::RSP] = loaded.stackPointer;
     }
     output << "ELF loaded into PSHere virtual memory"
            << "\nEntry point: 0x" << std::hex << loaded.entryPoint
@@ -87,5 +91,37 @@ Java_com_hayrx_ps4emu_MainActivity_nativeLoadElf(JNIEnv* env, jobject, jbyteArra
            << std::dec << "\nLoadable segments: " << loaded.loadedSegments
            << "\nMemory permissions: per-page R/W/X"
            << "\nExecution: not started; dynamic linking and process ABI are not implemented";
+    return env->NewStringUTF(output.str().c_str());
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_hayrx_ps4emu_MainActivity_nativeRunLoadedElf(JNIEnv* env, jobject, jint requestedLimit) {
+    std::lock_guard<std::mutex> lock(gElfRuntimeMutex);
+    if (!gLoadedAddressSpace || !gLoadedGuestMemory || !gLoadedCpu)
+        return env->NewStringUTF("No ELF program is loaded");
+    const std::uint64_t limit = requestedLimit <= 0 ? 500000ULL :
+        std::min<std::uint64_t>(static_cast<std::uint64_t>(requestedLimit), 5000000ULL);
+    std::uint64_t executed = 0;
+    pshere::StepResult status = pshere::StepResult::Executed;
+    while (executed < limit) {
+        status = pshere::X64Interpreter(*gLoadedAddressSpace).step(*gLoadedCpu);
+        if (status == pshere::StepResult::Executed) { ++executed; continue; }
+        if (status == pshere::StepResult::Halted) { ++executed; break; }
+        break;
+    }
+    std::ostringstream output;
+    output << "ELF execution stopped: " << pshere::X64Interpreter::resultName(status)
+           << "\\nInstructions this run: " << executed
+           << "\\nTotal instructions: " << gLoadedCpu->instructionsExecuted
+           << "\\nRIP: 0x" << std::hex << gLoadedCpu->rip
+           << "\\nRAX: 0x" << gLoadedCpu->registers[pshere::RAX]
+           << "\\nRSP: 0x" << gLoadedCpu->registers[pshere::RSP];
+    if (executed == limit && status == pshere::StepResult::Executed)
+        output << "\\nStopped at instruction budget; run again to continue.";
+    if (gLoadedCpu->halted) output << "\\nGuest executed HLT.";
+    if (status == pshere::StepResult::UnsupportedInstruction)
+        output << "\\nThis instruction is outside the current x86-64 subset.";
+    if (status == pshere::StepResult::MemoryFault)
+        output << "\\nGuest memory access or permission fault.";
     return env->NewStringUTF(output.str().c_str());
 }
