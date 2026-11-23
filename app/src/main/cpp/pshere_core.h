@@ -37,6 +37,7 @@ public:
     std::uint64_t budget() const;
     std::uint64_t committed() const;
     std::size_t pageCount() const;
+    bool releasePage(std::uint64_t pageAlignedAddress);
 private:
     using Page = std::vector<std::uint8_t>;
     std::uint64_t budgetBytes_;
