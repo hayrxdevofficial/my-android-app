@@ -196,11 +196,57 @@ StepResult X64Interpreter::step(CpuState& state) {
         ++state.instructionsExecuted;
         return StepResult::Executed;
     };
-    auto readModRm = [&](std::uint8_t& modrm, std::size_t& reg, std::size_t& rm) -> bool {
-        if (!readCode8( cursor++, modrm)) return false;
-        if ((modrm >> 6U) != 3U) return false; // Register-only addressing in this milestone.
+    auto readData = [&](std::uint64_t address, void* out, std::size_t count) {
+        return addressSpace_ ? addressSpace_->read(address, out, count) : memory_->read(address, out, count);
+    };
+    auto writeData = [&](std::uint64_t address, const void* in, std::size_t count) {
+        return addressSpace_ ? addressSpace_->write(address, in, count) : memory_->write(address, in, count);
+    };
+    auto readModRm = [&](std::uint8_t& modrm, std::size_t& reg, std::size_t& rm,
+                         bool& memoryOperand, std::uint64_t& effectiveAddress) -> bool {
+        if (!readCode8(cursor++, modrm)) return false;
+        const unsigned mod = modrm >> 6U;
+        const unsigned rawRm = modrm & 7U;
         reg = static_cast<std::size_t>(((modrm >> 3U) & 7U) | ((rex & 0x04U) ? 8U : 0U));
-        rm = static_cast<std::size_t>((modrm & 7U) | ((rex & 0x01U) ? 8U : 0U));
+        rm = static_cast<std::size_t>(rawRm | ((rex & 0x01U) ? 8U : 0U));
+        memoryOperand = mod != 3U;
+        if (!memoryOperand) { effectiveAddress = 0; return true; }
+
+        std::uint64_t base = 0;
+        std::uint64_t indexValue = 0;
+        unsigned scale = 0;
+        bool hasBase = true;
+        if (rawRm == 4U) {
+            std::uint8_t sib = 0;
+            if (!readCode8(cursor++, sib)) return false;
+            scale = sib >> 6U;
+            const unsigned rawIndex = (sib >> 3U) & 7U;
+            const unsigned rawBase = sib & 7U;
+            if (rawIndex != 4U || (rex & 0x02U)) {
+                const std::size_t indexReg = rawIndex | ((rex & 0x02U) ? 8U : 0U);
+                indexValue = state.registers[indexReg] << scale;
+            }
+            if (mod == 0U && rawBase == 5U) hasBase = false;
+            else base = state.registers[rawBase | ((rex & 0x01U) ? 8U : 0U)];
+        } else if (mod == 0U && rawRm == 5U) {
+            hasBase = false;
+        } else {
+            base = state.registers[rm];
+        }
+
+        std::int64_t displacement = 0;
+        if (mod == 1U) {
+            std::uint8_t raw = 0;
+            if (!readCode8(cursor++, raw)) return false;
+            displacement = static_cast<std::int8_t>(raw);
+        } else if (mod == 2U || (mod == 0U && !hasBase)) {
+            std::uint32_t raw = 0;
+            if (!readCode32(cursor, raw)) return false;
+            cursor += 4;
+            displacement = static_cast<std::int32_t>(raw);
+        }
+        if (mod == 0U && rawRm == 5U) base = cursor;
+        effectiveAddress = base + indexValue + static_cast<std::uint64_t>(displacement);
         return true;
     };
 
@@ -304,16 +350,26 @@ StepResult X64Interpreter::step(CpuState& state) {
         opcode == 0x39 || opcode == 0x3B || opcode == 0x85) {
         std::uint8_t modrm = 0;
         std::size_t reg = 0, rm = 0;
-        if (!readModRm(modrm, reg, rm)) return StepResult::UnsupportedInstruction;
-        const std::uint64_t lhs = state.registers[rm] & mask;
+        bool memoryOperand = false;
+        std::uint64_t effectiveAddress = 0;
+        if (!readModRm(modrm, reg, rm, memoryOperand, effectiveAddress)) return StepResult::MemoryFault;
+        const std::size_t operandBytes = rexW ? 8U : 4U;
+        std::uint64_t memoryValue = 0;
+        if (memoryOperand && !readData(effectiveAddress, &memoryValue, operandBytes)) return StepResult::MemoryFault;
+        const std::uint64_t lhs = (memoryOperand ? memoryValue : state.registers[rm]) & mask;
         const std::uint64_t rhs = state.registers[reg] & mask;
+        auto writeRm = [&](std::uint64_t value) {
+            if (memoryOperand) return writeData(effectiveAddress, &value, operandBytes);
+            state.registers[rm] = rexW ? value : static_cast<std::uint32_t>(value);
+            return true;
+        };
         switch (opcode) {
-            case 0x89: state.registers[rm] = rexW ? rhs : static_cast<std::uint32_t>(rhs); break;
+            case 0x89: if (!writeRm(rhs)) return StepResult::MemoryFault; break;
             case 0x8B: state.registers[reg] = rexW ? lhs : static_cast<std::uint32_t>(lhs); break;
             case 0x01: {
                 executeAdd(state, lhs, rhs, bits);
                 const auto value = (lhs + rhs) & mask;
-                state.registers[rm] = rexW ? value : static_cast<std::uint32_t>(value);
+                if (!writeRm(value)) return StepResult::MemoryFault;
                 break;
             }
             case 0x03: {
@@ -325,7 +381,7 @@ StepResult X64Interpreter::step(CpuState& state) {
             case 0x29: {
                 executeSub(state, lhs, rhs, bits);
                 const auto value = (lhs - rhs) & mask;
-                state.registers[rm] = rexW ? value : static_cast<std::uint32_t>(value);
+                if (!writeRm(value)) return StepResult::MemoryFault;
                 break;
             }
             case 0x2B: {
@@ -336,7 +392,7 @@ StepResult X64Interpreter::step(CpuState& state) {
             }
             case 0x31: {
                 const auto value = lhs ^ rhs;
-                state.registers[rm] = rexW ? value : static_cast<std::uint32_t>(value);
+                if (!writeRm(value)) return StepResult::MemoryFault;
                 state.rflags &= ~kArithmeticFlags;
                 updateCommonFlags(state, value, bits);
                 break;
