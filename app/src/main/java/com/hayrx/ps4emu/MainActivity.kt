@@ -29,6 +29,22 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
     private lateinit var gameFile: TextView
     private lateinit var profile: TextView
     private lateinit var inputManager: InputManager
+    private lateinit var connectivityManager: ConnectivityManager
+
+    private val networkCallback = object : ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(network: android.net.Network) {
+            runOnUiThread { refreshNetworkStatus() }
+        }
+        override fun onLost(network: android.net.Network) {
+            runOnUiThread { refreshNetworkStatus() }
+        }
+        override fun onCapabilitiesChanged(
+            network: android.net.Network,
+            networkCapabilities: NetworkCapabilities
+        ) {
+            runOnUiThread { refreshNetworkStatus() }
+        }
+    }
 
     companion object {
         // Official Sony links currently exposed by the PS4 support page.
@@ -52,6 +68,8 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
         window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         inputManager = getSystemService(Context.INPUT_SERVICE) as InputManager
         inputManager.registerInputDeviceListener(this, null)
+        connectivityManager = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        connectivityManager.registerDefaultNetworkCallback(networkCallback)
 
         val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
         // These are emulator profile limits, not memory/storage reserved from Android.
@@ -80,6 +98,15 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
             12, 0xFF9DB3D5.toInt()
         ))
         refreshProfile()
+
+        content.addView(section("TABLET NETWORK BRIDGE"))
+        content.addView(label(
+            "The app uses Android's active network automatically. When the tablet is on Wi-Fi, " +
+                "firmware downloads and app network requests use that Wi-Fi connection. " +
+                "PS4 guest-network emulation is not implemented until the console core exists.",
+            12, 0xFF9DB3D5.toInt()
+        ))
+        content.addView(action("CHECK WI-FI / INTERNET STATUS") { refreshNetworkStatus() })
 
         content.addView(section("OFFICIAL SONY FIRMWARE"))
         content.addView(label(
@@ -272,6 +299,7 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
 
     override fun onDestroy() {
         inputManager.unregisterInputDeviceListener(this)
+        try { connectivityManager.unregisterNetworkCallback(networkCallback) } catch (_: Exception) { }
         super.onDestroy()
     }
 }
