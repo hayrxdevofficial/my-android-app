@@ -324,9 +324,11 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
         }
     }
 
-    private fun refreshAll() {
-        val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-        val caps = cm.activeNetwork?.let { cm.getNetworkCapabilities(it) }
+    private fun refreshNetworkStatus() {
+        if (!::status.isInitialized) return
+        val caps = connectivityManager.activeNetwork?.let {
+            connectivityManager.getNetworkCapabilities(it)
+        }
         val network = when {
             caps == null -> "Offline"
             caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> "Wi-Fi connected"
@@ -335,11 +337,15 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
             else -> "Network connected"
         }
         status.text = "Network: $network"
+    }
+
+    private fun refreshAll() {
+        refreshNetworkStatus()
         refreshDevices()
     }
 
     private fun refreshDevices() {
-        val found = inputManager.inputDeviceIds.mapNotNull { id ->
+        val found = inputManager.inputDeviceIds.asIterable().mapNotNull { id ->
             inputManager.getInputDevice(id)?.let { d ->
                 val type = when {
                     d.supportsSource(InputDevice.SOURCE_GAMEPAD) -> "Gamepad"
