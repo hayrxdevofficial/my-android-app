@@ -504,6 +504,45 @@ SelfTestResult runSelfTest() {
     result.passed = result.passed && arithmetic.registers[RAX] == UINT64_MAX &&
         arithmetic.flag(FlagCarry) && arithmetic.flag(FlagSign) && !arithmetic.flag(FlagZero);
     if (!result.passed) result.message = "Arithmetic flag regression test failed";
+
+    // Exercise [RAX], [RBX+8] and [RSP-16] using ModRM/SIB memory operands.
+    const std::uint8_t addressingProgram[] = {
+        0x48,0xB8,0x00,0x50,0x00,0x00,0x00,0x00,0x00,0x00, // MOV RAX, 0x5000
+        0x48,0xBB,0x00,0x50,0x00,0x00,0x00,0x00,0x00,0x00, // MOV RBX, 0x5000
+        0x48,0xB9,0x88,0x77,0x66,0x55,0x44,0x33,0x22,0x11, // MOV RCX, imm64
+        0x48,0x89,0x08,                                     // MOV [RAX], RCX
+        0x48,0x8B,0x38,                                     // MOV RDI, [RAX]
+        0x48,0x8B,0x53,0x08,                                // MOV RDX, [RBX+8]
+        0x48,0x89,0x4C,0x24,0xF0,                           // MOV [RSP-16], RCX
+        0x48,0x8B,0x74,0x24,0xF0,                           // MOV RSI, [RSP-16]
+        0xF4
+    };
+    GuestMemory addressingMemory;
+    const std::uint64_t expectedMemory = 0xAABBCCDDEEFF0011ULL;
+    if (!addressingMemory.write(0x3000, addressingProgram, sizeof(addressingProgram)) ||
+        !addressingMemory.write(0x5008, &expectedMemory, sizeof(expectedMemory))) {
+        result.passed = false;
+        result.message = "Could not prepare effective-address regression test";
+        return result;
+    }
+    CpuState addressingCpu;
+    addressingCpu.rip = 0x3000;
+    addressingCpu.registers[RSP] = 0x7000;
+    X64Interpreter addressingInterpreter(addressingMemory);
+    for (int i = 0; i < 16 && !addressingCpu.halted; ++i) {
+        const auto step = addressingInterpreter.step(addressingCpu);
+        if (step == StepResult::MemoryFault || step == StepResult::UnsupportedInstruction) break;
+    }
+    std::uint64_t stored = 0;
+    const bool addressingPassed = addressingCpu.halted &&
+        addressingCpu.registers[RDI] == 0x1122334455667788ULL &&
+        addressingCpu.registers[RDX] == expectedMemory &&
+        addressingCpu.registers[RSI] == 0x1122334455667788ULL &&
+        addressingMemory.read(0x5000, &stored, sizeof(stored)) &&
+        stored == 0x1122334455667788ULL;
+    result.passed = result.passed && addressingPassed;
+    if (!addressingPassed) result.message = "x86-64 effective-address regression failed for [RAX], [RBX+8] or [RSP-16]";
+    else result.message += "; ModRM/SIB memory addressing tests passed";
     return result;
 }
 
