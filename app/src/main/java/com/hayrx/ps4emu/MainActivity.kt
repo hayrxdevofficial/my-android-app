@@ -376,14 +376,14 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
                             val blockOffset = u32(buffer, base)
                             val fragmentSize = u32(buffer, base + 4)
                             val nameBytes = header.copyOfRange(base + 16, base + 48)
-                            val name = safeName(nameBytes).ifBlank { "entry_\${i} (unnamed)" }
+                            val name = safeName(nameBytes).ifBlank { "entry_${i} (unnamed)" }
                             val dataOffset = blockOffset * 512L
                             val endOffset = dataOffset + fragmentSize
                             val rangeValid = dataOffset >= 512L && endOffset >= dataOffset &&
                                 (fileSize < 0L || endOffset <= fileSize)
-                            lines += "\${i + 1}. $name"
-                            lines += "   Start: \${dataOffset} bytes (sector \${blockOffset})"
-                            lines += "   Size: \${fragmentSize} bytes"
+                            lines += "${i + 1}. $name"
+                            lines += "   Start: ${dataOffset} bytes (sector ${blockOffset})"
+                            lines += "   Size: ${fragmentSize} bytes"
                             lines += "   Range: " + if (rangeValid) "within file bounds" else "OUT OF BOUNDS / cannot verify"
                         }
                         lines += ""
@@ -401,7 +401,7 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
                     else -> "Unrecognized file header. First 4 bytes: $magic\nThis file is not recognized as a PS4 SLB2 container or known PS4 PUP fragment."
                 }
             } catch (error: Exception) {
-                "PUP inspection failed: \${error.message ?: "unknown error"}"
+                "PUP inspection failed: ${error.message ?: "unknown error"}"
             }
             runOnUiThread { pupReport.text = report }
         }.start()
