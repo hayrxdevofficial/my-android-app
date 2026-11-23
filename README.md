@@ -10,6 +10,7 @@ Experimental Android frontend and native execution-core foundation. This reposit
 - Sparse, page-based guest memory with a configurable 6 GiB ceiling (pages are committed only when written)
 - Initial x86-64 interpreter subset: `MOV r64, imm64`, `NOP`, and `HLT`
 - Built-in CPU smoke test: executes `MOV RAX, 42; NOP; HLT` and checks the resulting state
+- Guest-memory tests: cross-page reads/writes, zero-filled unmapped reads, and enforcement of a small test budget
 - Android build targets: `arm64-v8a` and `x86_64`
 - Keyboard and USB/Bluetooth Android gamepad detection
 - Android default-network monitoring (Wi-Fi, mobile data, Ethernet)
