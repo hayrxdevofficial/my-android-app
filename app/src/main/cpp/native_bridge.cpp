@@ -3,6 +3,7 @@
 #include "pshere_core.h"
 #include "pshere_vm.h"
 
+#include <algorithm>
 #include <iomanip>
 #include <memory>
 #include <mutex>
