@@ -12,6 +12,7 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.ParcelFileDescriptor
 import android.os.Environment
 import android.provider.Settings
 import android.view.Gravity
@@ -287,10 +288,12 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
                 if (!dir.exists() && !dir.mkdirs()) throw IllegalStateException("Cannot create firmware folder")
                 val target = File(dir, fileName)
                 var bytes = 0L
-                (getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager).openDownloadedFile(id).use { input ->
-                    target.outputStream().buffered().use { output ->
-                        val buffer = ByteArray(65536)
-                        while (true) { val count = input.read(buffer); if (count < 0) break; output.write(buffer, 0, count); bytes += count }
+                (getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager).openDownloadedFile(id).use { descriptor ->
+                    ParcelFileDescriptor.AutoCloseInputStream(descriptor).use { input ->
+                        target.outputStream().buffered().use { output ->
+                            val buffer = ByteArray(65536)
+                            while (true) { val count = input.read(buffer); if (count < 0) break; output.write(buffer, 0, count); bytes += count }
+                        }
                     }
                 }
                 runOnUiThread { firmwareProgressBar.isIndeterminate = false; firmwareProgressBar.progress = 100; firmwareProgressText.text = "100% • Imported (" + (bytes / 1048576) + " MB). Not bootable yet."; gameFile.text = "PUP stored in PSHere private firmware folder: " + target.name; activeFirmwareDownloadId = null }
