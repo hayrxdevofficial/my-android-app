@@ -4,6 +4,7 @@ project(pshere LANGUAGES CXX)
 add_library(pshere SHARED
     native_bridge.cpp
     pshere_core.cpp
+    pshere_vm.cpp
 )
 
 target_compile_features(pshere PRIVATE cxx_std_17)
