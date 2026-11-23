@@ -2,7 +2,7 @@
 
 Experimental Android frontend and native execution-core foundation. This repository is not yet a working PS4 emulator and does not currently boot commercial games.
 
-## Version 0.6.0 — virtual memory protection and ELF64 loading
+## Version 0.7.0 — x86-64 addressing, CR3 page tables and ELF execution
 
 - Kotlin Android application
 - C++17 native library built with Android NDK and CMake
@@ -11,19 +11,19 @@ Experimental Android frontend and native execution-core foundation. This reposit
 - x86-64 general-purpose register file: RAX–R15, RSP, RBP, RSI, RDI, RIP
 - RFLAGS support for carry, parity, auxiliary, zero, sign and overflow flags
 - 64-bit stack with PUSH, POP, CALL and RET
-- Register-only MOV, ADD, SUB, XOR, CMP and TEST operations
+- Register and basic memory-operand MOV, ADD, SUB, XOR, CMP and TEST operations using ModRM/SIB effective addresses\n- Base, index, scale and displacement decoding, including `[RAX]`, `[RBX+8]` and `[RSP-16]`
 - Control flow: short JMP, JE/JZ and JNE/JNZ
 - NOP and HLT
-- Virtual address space with 4 KiB page mappings backed by sparse guest physical storage
+- Virtual address space with 4 KiB page mappings backed by sparse guest physical storage\n- Four-level software x86-64 page-table walk (PML4 → PDPT → PD → PT) with a CR3 root register value and per-page permission checks
 - Per-page read, write and execute permissions; protected instruction fetch and stack access
 - Page map, unmap and permission-change operations with user-address range checks
-- Static little-endian x86-64 ELF64 ET_EXEC loader for PT_LOAD segments
+- Little-endian x86-64 ELF64 ET_EXEC and ET_DYN loader for PT_LOAD segments\n- ET_DYN load bias and a limited RELA relocator for relative and locally-defined symbol relocations; external shared libraries and PT_INTERP remain unsupported
 - ELF segment file copying, zero-filled BSS, entry-point validation and initial 8 MiB user stack
 - CPU interpreter can fetch instructions and use PUSH/POP/CALL/RET through the protected virtual address space
 - Built-in virtual-memory and synthetic ELF loader regression tests
-- Android file picker can load a user-selected static ELF64 file into the PSHere address space; loading does not start execution
+- Android file picker can load an ELF64 file and a separate button starts it with a bounded instruction budget; unsupported opcodes or memory faults stop execution
 - ELF scope is intentionally limited: ET_DYN/PIE, PT_INTERP, dynamic linking, relocations, shared libraries and PS4 SELF containers are not supported
-- Current addressing scope: register-only ModRM; general memory operands, SIMD and full x86-64 decoding are not implemented
+- Current addressing scope: basic ModRM/SIB memory operands; SIMD, many x86-64 opcodes, segment bases, full exception semantics and complete decoding remain unsupported
 - Built-in CPU smoke test: executes `MOV RAX, 42; NOP; HLT` and checks the resulting state
 - Guest-memory tests: cross-page reads/writes, zero-filled unmapped reads, and enforcement of a small test budget
 - Android build targets: `arm64-v8a` and `x86_64`
@@ -79,3 +79,4 @@ The current Android ARM64 host also needs a fast x86-64 guest translation strate
 ## Build
 
 Open in Android Studio with JDK 17 and Android SDK 35, with Android NDK 27.2.12479018 and CMake 3.22.1 installed. GitHub Actions builds a debug APK for `arm64-v8a` and `x86_64` and uploads the `pshere-android-debug-apk` artifact.
+\n\n## Android app identity\n\nThe launcher label is `Hayrulla004004_Dev.ps4emulator`. This is the local Android app name; it does not set a Google Play developer account or store listing identity.\n
