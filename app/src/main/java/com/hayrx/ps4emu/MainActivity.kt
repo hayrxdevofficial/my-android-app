@@ -39,6 +39,12 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
     private lateinit var firmwareProgressText: TextView
     private lateinit var firmwareProgressBar: ProgressBar
     private lateinit var pupReport: TextView
+    private lateinit var pupExtractProgressBar: ProgressBar
+    private lateinit var pupExtractProgressText: TextView
+    private var inspectedPupUri: Uri? = null
+    private var inspectedPupFragments: List<PupFragment> = emptyList()
+
+    private data class PupFragment(val name: String, val offset: Long, val size: Long)
     private val mainHandler = Handler(Looper.getMainLooper())
     private var activeFirmwareDownloadId: Long? = null
     private lateinit var inputManager: InputManager
@@ -149,6 +155,11 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
         content.addView(action("OPEN PS4UPDATE.PUP • INSPECT") { openPupPicker() })
         pupReport = label("No PUP inspected yet.", 12, 0xFFD4DDF0.toInt())
         content.addView(pupReport)
+        content.addView(action("EXTRACT BOTH PUP FRAGMENTS") { extractPupFragments() })
+        pupExtractProgressBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply { max = 100; progress = 0 }
+        content.addView(pupExtractProgressBar)
+        pupExtractProgressText = label("No fragments extracted.", 12, 0xFF9DB3D5.toInt())
+        content.addView(pupExtractProgressText)
         status = label("Network: checking", 14, 0xFFB8C7E0.toInt())
         content.addView(status)
         content.addView(action("REFRESH STATUS & CONTROLLERS") { refreshAll() })
@@ -319,8 +330,12 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
     }
 
     private fun inspectPup(uri: Uri) {
+        inspectedPupUri = uri
+        inspectedPupFragments = emptyList()
         pupReport.text = "Reading PUP header…"
+        pupExtractProgressText.text = "Waiting for a valid SLB2 container."
         Thread {
+            val parsedFragments = mutableListOf<PupFragment>()
             val report = try {
                 val header = ByteArray(512)
                 val input = contentResolver.openInputStream(uri)
@@ -380,7 +395,8 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
                             val dataOffset = blockOffset * 512L
                             val endOffset = dataOffset + fragmentSize
                             val rangeValid = dataOffset >= 512L && endOffset >= dataOffset &&
-                                (fileSize < 0L || endOffset <= fileSize)
+                                fileSize >= 0L && endOffset <= fileSize
+                            if (rangeValid && fragmentSize > 0L) parsedFragments += PupFragment(name, dataOffset, fragmentSize)
                             lines += "${i + 1}. $name"
                             lines += "   Start: ${dataOffset} bytes (sector ${blockOffset})"
                             lines += "   Size: ${fragmentSize} bytes"
@@ -403,7 +419,91 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
             } catch (error: Exception) {
                 "PUP inspection failed: ${error.message ?: "unknown error"}"
             }
-            runOnUiThread { pupReport.text = report }
+            runOnUiThread {
+                pupReport.text = report
+                inspectedPupFragments = parsedFragments.toList()
+                pupExtractProgressBar.progress = 0
+                pupExtractProgressText.text = if (parsedFragments.isNotEmpty()) {
+                    "Ready: ${parsedFragments.size} fragment(s) can be extracted."
+                } else {
+                    "No verified in-bounds fragments available for extraction."
+                }
+            }
+        }.start()
+    }
+
+    private fun extractPupFragments() {
+        val source = inspectedPupUri
+        val fragments = inspectedPupFragments
+        if (source == null || fragments.isEmpty()) {
+            pupExtractProgressText.text = "Inspect a valid SLB2 PUP first."
+            return
+        }
+        pupExtractProgressBar.progress = 0
+        pupExtractProgressBar.isIndeterminate = false
+        pupExtractProgressText.text = "Preparing fragment extraction…"
+        Thread {
+            try {
+                val outputDir = File(File(filesDir, "firmware"), "extracted")
+                if (!outputDir.exists() && !outputDir.mkdirs()) throw IllegalStateException("Cannot create private extraction folder")
+                val totalBytes = fragments.sumOf { it.size }
+                if (totalBytes <= 0L) throw IllegalArgumentException("Invalid total fragment size")
+                var completedBytes = 0L
+                val results = mutableListOf<String>()
+                fragments.forEachIndexed { index, fragment ->
+                    if (fragment.offset < 512L || fragment.size <= 0L || fragment.offset > Long.MAX_VALUE - fragment.size) {
+                        throw IllegalArgumentException("Invalid range for ${fragment.name}")
+                    }
+                    val input = contentResolver.openInputStream(source)
+                        ?: throw IllegalStateException("Cannot reopen selected PUP")
+                    val digest = java.security.MessageDigest.getInstance("SHA-256")
+                    val targetName = if (index == 0) "PS4UPDATE1.PUP" else "PS4UPDATE${index + 1}.PUP"
+                    val target = File(outputDir, targetName)
+                    var copied = 0L
+                    input.use { stream ->
+                        var remainingSkip = fragment.offset
+                        while (remainingSkip > 0L) {
+                            val skipped = stream.skip(remainingSkip)
+                            if (skipped > 0L) remainingSkip -= skipped
+                            else {
+                                if (stream.read() < 0) throw IllegalArgumentException("Unexpected end of source before ${fragment.name}")
+                                remainingSkip--
+                            }
+                        }
+                        target.outputStream().buffered(65536).use { output ->
+                            val buffer = ByteArray(65536)
+                            while (copied < fragment.size) {
+                                val wanted = minOf(buffer.size.toLong(), fragment.size - copied).toInt()
+                                val count = stream.read(buffer, 0, wanted)
+                                if (count < 0) throw IllegalArgumentException("Source ended early while extracting ${fragment.name}")
+                                if (count == 0) continue
+                                output.write(buffer, 0, count)
+                                digest.update(buffer, 0, count)
+                                copied += count
+                                val overall = completedBytes + copied
+                                val percent = ((overall * 100L) / totalBytes).toInt().coerceIn(0, 100)
+                                runOnUiThread {
+                                    pupExtractProgressBar.progress = percent
+                                    pupExtractProgressText.text = "Extracting ${fragment.name}: $percent%"
+                                }
+                            }
+                        }
+                    }
+                    if (copied != fragment.size || target.length() != fragment.size) {
+                        target.delete()
+                        throw IllegalStateException("Size verification failed for ${fragment.name}")
+                    }
+                    val hash = digest.digest().joinToString("") { "%02x".format(it) }
+                    results += "$targetName • $copied bytes\nSHA-256: $hash"
+                    completedBytes += copied
+                }
+                runOnUiThread {
+                    pupExtractProgressBar.progress = 100
+                    pupExtractProgressText.text = "Extraction complete. Files are in the private firmware/extracted folder.\n" + results.joinToString("\n\n") + "\n\nSHA-256 checks extracted bytes only; it does not verify Sony signatures or firmware authenticity."
+                }
+            } catch (error: Exception) {
+                runOnUiThread { pupExtractProgressText.text = "Extraction failed: ${error.message ?: "unknown error"}" }
+            }
         }.start()
     }
 
