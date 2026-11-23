@@ -31,8 +31,9 @@ Java_com_hayrx_ps4emu_MainActivity_nativeCoreInfo(JNIEnv* env, jobject) {
            << "Host architecture: " << architecture << "\n"
            << "Guest target: x86-64 (experimental subset)\nRegisters: RAX-R15, RIP, RFLAGS\nStack: 64-bit PUSH/POP/CALL/RET\nALU: MOV, ADD, SUB, XOR, CMP, TEST\nControl flow: JMP, JE/JZ, JNE/JNZ\n"
            << "Guest RAM budget: 6 GiB, allocated on demand\n"
-           << "Virtual memory: page mapping + R/W/X permissions + protected instruction fetch\n"
-           << "ELF: static little-endian x86-64 ET_EXEC loader + zero-filled BSS + initial stack\n"
+           << "Virtual memory: four-level x86-64 page tables, CR3 root, R/W/X permissions + protected fetch\n"
+           << "ELF: ET_EXEC/ET_DYN loader, bounded RELA relocations, BSS zero-fill + initial stack\n"
+           << "Addressing: ModRM/SIB base+index+scale+displacement memory operands\n"
            << "Implemented: sparse guest pages, MOV, ADD, SUB, XOR, CMP, TEST, PUSH, POP, CALL, RET, JMP, Jcc, NOP, HLT\n"
            << "Not implemented: PS4 kernel, SELF decryption, GPU, audio, game boot";
     return env->NewStringUTF(output.str().c_str());
@@ -90,8 +91,10 @@ Java_com_hayrx_ps4emu_MainActivity_nativeLoadElf(JNIEnv* env, jobject, jbyteArra
            << "\nEntry point: 0x" << std::hex << loaded.entryPoint
            << "\nInitial RSP: 0x" << loaded.stackPointer
            << std::dec << "\nLoadable segments: " << loaded.loadedSegments
+           << "\nCR3: 0x" << gLoadedAddressSpace->cr3()
            << "\nMemory permissions: per-page R/W/X"
-           << "\nExecution: not started; dynamic linking and process ABI are not implemented";
+           << "\nExecution: ready; press RUN LOADED ELF"
+           << "\nDynamic linking: local/relative RELA subset; external shared libraries are not linked";
     return env->NewStringUTF(output.str().c_str());
 }
 
