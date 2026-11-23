@@ -2,7 +2,7 @@
 
 Experimental Android frontend and native execution-core foundation. This repository is not yet a working PS4 emulator and does not currently boot commercial games.
 
-## Version 0.5.0 — CPU registers, flags and stack
+## Version 0.6.0 — virtual memory protection and ELF64 loading
 
 - Kotlin Android application
 - C++17 native library built with Android NDK and CMake
@@ -14,7 +14,15 @@ Experimental Android frontend and native execution-core foundation. This reposit
 - Register-only MOV, ADD, SUB, XOR, CMP and TEST operations
 - Control flow: short JMP, JE/JZ and JNE/JNZ
 - NOP and HLT
-- Current addressing scope: register-to-register ModRM only; memory operands, SIMD and full x86-64 decoding are not implemented
+- Virtual address space with 4 KiB page mappings backed by sparse guest physical storage
+- Per-page read, write and execute permissions; protected instruction fetch and stack access
+- Page map, unmap and permission-change operations with user-address range checks
+- Static little-endian x86-64 ELF64 ET_EXEC loader for PT_LOAD segments
+- ELF segment file copying, zero-filled BSS, entry-point validation and initial 8 MiB user stack
+- CPU interpreter can fetch instructions and use PUSH/POP/CALL/RET through the protected virtual address space
+- Built-in virtual-memory and synthetic ELF loader regression tests
+- ELF scope is intentionally limited: ET_DYN/PIE, PT_INTERP, dynamic linking, relocations, shared libraries and PS4 SELF containers are not supported
+- Current addressing scope: register-only ModRM; general memory operands, SIMD and full x86-64 decoding are not implemented
 - Built-in CPU smoke test: executes `MOV RAX, 42; NOP; HLT` and checks the resulting state
 - Guest-memory tests: cross-page reads/writes, zero-filled unmapped reads, and enforcement of a small test budget
 - Android build targets: `arm64-v8a` and `x86_64`
@@ -26,19 +34,21 @@ Experimental Android frontend and native execution-core foundation. This reposit
 
 ## PSHere native core
 
-The native core is loaded by the Android app as `libpshere.so`. The UI exposes core diagnostics and a self-test button. The current interpreter is deliberately small. It validates general-purpose registers, selected RFLAGS arithmetic bits, a 64-bit stack, basic arithmetic/logical operations and short conditional branches. It remains a prototype instruction subset, not a complete x86-64 CPU.
+The native core is loaded by the Android app as `libpshere.so`. The UI exposes core diagnostics and a self-test button. The current interpreter is deliberately small. It validates general-purpose registers, selected RFLAGS arithmetic bits, a 64-bit stack, basic arithmetic/logical operations, short conditional branches, and protected instruction fetch through the new virtual address space. It remains a prototype instruction subset, not a complete x86-64 CPU.
 
 The memory manager uses 4 KiB pages and allocates them on demand. The 6 GiB value is a guest-memory budget, not a request to reserve 6 GiB from Android at startup. Actual device memory pressure and Android process limits still apply.
 
-### Current instruction subset
+### Virtual memory and protection
 
-| Instruction | Current behavior |
-|---|---|
-| `48 B8+r imm64` | Load a 64-bit immediate into a general-purpose register |
-| `90` | NOP |
-| `F4` | Halt the test CPU |
+The virtual memory layer uses 4 KiB pages and translates guest virtual pages to sparse backing pages. Each mapped page has read, write and execute permissions. Instruction fetch requires execute permission; normal reads require read permission; writes and stack updates require write permission. Unmapped accesses and permission violations fail rather than silently reading or modifying memory.
 
-This is not a complete x86-64 implementation. ModRM memory operands, SIB/displacement addressing, byte/word operations, most immediate ALU forms, SIMD, x87, exceptions/interrupts, paging permissions, threads, PS4 syscall ABI, executable loading and kernel services remain unimplemented.
+The current address-space model is a first milestone, not a complete hardware MMU: it does not yet implement x86-64 four-level page tables, CR3, TLBs, canonical-address exceptions, privilege rings, copy-on-write, guard-page growth or memory-mapped I/O. The interpreter currently fetches instructions and performs stack operations through this layer; general ModRM memory operands are still pending.
+
+### ELF64 loader
+
+The loader accepts static, little-endian x86-64 ELF64 `ET_EXEC` files. It validates the ELF header and program-header bounds, maps `PT_LOAD` segments, copies file bytes, zero-fills the remainder of each segment (BSS), applies per-page R/W/X permissions, validates that the entry point is executable, and creates an initial 8 MiB read/write stack.
+
+It deliberately rejects dynamic interpreters and does not yet support `ET_DYN`/PIE relocation, dynamic linking, shared libraries, TLS, auxiliary vectors, process startup ABI, or PS4 `SELF` containers. A successful ELF self-test only proves the synthetic test executable can be loaded and its NOP/HLT entry code fetched and executed; it does not imply PS4 games can boot.
 
 ## Tablet Wi-Fi networking
 
