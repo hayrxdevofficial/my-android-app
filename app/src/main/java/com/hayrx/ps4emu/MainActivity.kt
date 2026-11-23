@@ -1,6 +1,7 @@
 package com.hayrx.ps4emu
 
 import android.app.Activity
+import java.io.ByteArrayOutputStream
 import android.app.DownloadManager
 import android.content.Context
 import android.content.Intent
@@ -60,6 +61,7 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
         private const val KEY_STORAGE_GB = "storage_gb"
         private const val KEY_RAM_GB = "ram_gb"
         private const val PICKER_CODE = 4102
+        private const val ELF_PICKER_CODE = 4103
 
         private val nativeLibraryLoaded = try { System.loadLibrary("pshere"); true } catch (_: UnsatisfiedLinkError) { false }
     }
@@ -106,6 +108,7 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
         coreStatus = label("Loading native core...", 12, 0xFF9DB3D5.toInt())
         content.addView(coreStatus)
         content.addView(action("RUN X86-64 CORE SELF-TEST") { runCoreSelfTest() })
+        content.addView(action("LOAD STATIC X86-64 ELF64") { openElfPicker() })
         refreshCoreStatus()
 
         content.addView(section("TABLET NETWORK BRIDGE"))
@@ -201,6 +204,7 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
 
     private external fun nativeCoreInfo(): String
     private external fun nativeRunSelfTest(): String
+    private external fun nativeLoadElf(data: ByteArray): String
 
     private fun refreshCoreStatus() {
         coreStatus.text = if (nativeLibraryLoaded) {
@@ -256,6 +260,46 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
         }
     }
 
+    private fun openElfPicker() {
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "*/*"
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        startActivityForResult(intent, ELF_PICKER_CODE)
+    }
+
+    private fun loadElf(uri: Uri) {
+        coreStatus.text = "Reading ELF file..."
+        Thread {
+            val result = try {
+                val bytes = contentResolver.openInputStream(uri)?.use { input ->
+                    val output = ByteArrayOutputStream()
+                    val buffer = ByteArray(8192)
+                    var total = 0
+                    while (true) {
+                        val count = input.read(buffer)
+                        if (count < 0) break
+                        total += count
+                        if (total > 128 * 1024 * 1024) {
+                            throw IllegalArgumentException("ELF file exceeds the 128 MiB loader limit")
+                        }
+                        output.write(buffer, 0, count)
+                    }
+                    output.toByteArray()
+                } ?: throw IllegalArgumentException("Could not open selected file")
+                if (!nativeLibraryLoaded) "PSHere native library is unavailable for this device ABI."
+                else nativeLoadElf(bytes)
+            } catch (error: Exception) {
+                "ELF load failed: ${error.message}"
+            }
+            runOnUiThread {
+                coreStatus.text = result
+                gameFile.text = "Selected ELF: ${uri.lastPathSegment ?: uri}\n$result"
+            }
+        }.start()
+    }
+
     private fun openPicker() {
         val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
             addCategory(Intent.CATEGORY_OPENABLE)
@@ -268,6 +312,9 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
     @Deprecated("Document picker callback")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == ELF_PICKER_CODE && resultCode == RESULT_OK) {
+            data?.data?.let { uri -> loadElf(uri) }
+        }
         if (requestCode == PICKER_CODE && resultCode == RESULT_OK) data?.data?.let { uri ->
             val name = uri.lastPathSegment ?: uri.toString()
             gameFile.text = "Selected: $name\nRead access granted. Firmware parsing and game execution are not implemented."
