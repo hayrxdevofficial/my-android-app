@@ -108,7 +108,8 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
         coreStatus = label("Loading native core...", 12, 0xFF9DB3D5.toInt())
         content.addView(coreStatus)
         content.addView(action("RUN X86-64 CORE SELF-TEST") { runCoreSelfTest() })
-        content.addView(action("LOAD STATIC X86-64 ELF64") { openElfPicker() })
+        content.addView(action("LOAD X86-64 ELF64") { openElfPicker() })
+        content.addView(action("RUN LOADED ELF (500K INSTRUCTIONS)") { runLoadedElf() })
         refreshCoreStatus()
 
         content.addView(section("TABLET NETWORK BRIDGE"))
@@ -205,6 +206,7 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
     private external fun nativeCoreInfo(): String
     private external fun nativeRunSelfTest(): String
     private external fun nativeLoadElf(data: ByteArray): String
+    private external fun nativeRunLoadedElf(maxInstructions: Int): String
 
     private fun refreshCoreStatus() {
         coreStatus.text = if (nativeLibraryLoaded) {
@@ -258,6 +260,19 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
         } catch (_: Exception) {
             Toast.makeText(this, "Could not open Sony support page", Toast.LENGTH_SHORT).show()
         }
+    }
+
+    private fun runLoadedElf() {
+        coreStatus.text = "Running guest ELF with a 500,000-instruction safety budget..."
+        Thread {
+            val result = try {
+                if (!nativeLibraryLoaded) "PSHere native library is unavailable for this device ABI."
+                else nativeRunLoadedElf(500000)
+            } catch (error: UnsatisfiedLinkError) {
+                "ELF execution failed: ${error.message}"
+            }
+            runOnUiThread { coreStatus.text = result }
+        }.start()
     }
 
     private fun openElfPicker() {
