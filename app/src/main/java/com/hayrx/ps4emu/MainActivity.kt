@@ -91,7 +91,7 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
         page.addView(scroll)
 
         content.addView(label("PS4 EMULATOR", 28, 0xFFFFFFFF.toInt()))
-        content.addView(label("PSHERE NATIVE CORE • VERSION 0.6.0", 11, 0xFF8EA4C8.toInt()))
+        content.addView(label("PSHERE NATIVE CORE • VERSION 0.7.0", 11, 0xFF8EA4C8.toInt()))
         content.addView(label("Compatibility prototype. PS4 games do not run yet.", 14, 0xFFFFC66D.toInt()))
 
         content.addView(section("EMULATOR PROFILE"))
@@ -178,10 +178,10 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
 
         content.addView(section("ENGINE ROADMAP"))
         content.addView(label(
-            "1. PS4 CPU/Jaguar compatibility layer\n" +
-                "2. Memory map and virtual storage\n" +
-                "3. Graphics command translation\n" +
-                "4. Audio, firmware parsing and compatibility tests",
+            "1. Expand x86-64 CPU instruction coverage\n" +
+                "2. PS4 kernel and system-library compatibility\n" +
+                "3. GPU command translation and shaders\n" +
+                "4. Audio, storage and compatibility testing",
             13, 0xFF8EA4C8.toInt()
         ))
         setContentView(page)
