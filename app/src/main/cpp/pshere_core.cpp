@@ -133,10 +133,30 @@ SelfTestResult runSelfTest() {
         }
     }
 
+    const bool cpuPassed = cpu.halted && cpu.registers[0] == 42 &&
+                           cpu.instructionsExecuted == 3 && cpu.rip == 0x100C;
+    if (!cpuPassed) {
+        result.message = "CPU state validation failed";
+        return result;
+    }
+
+    // Verify cross-page reads/writes and enforce a two-page test budget.
+    GuestMemory boundaryMemory(2 * kPageSize);
+    const std::uint8_t boundaryInput[] = {0x11, 0x22, 0x33, 0x44};
+    std::uint8_t boundaryOutput[sizeof(boundaryInput)]{};
+    const bool crossPageWrite = boundaryMemory.write(kPageSize - 2, boundaryInput, sizeof(boundaryInput));
+    const bool crossPageRead = boundaryMemory.read(kPageSize - 2, boundaryOutput, sizeof(boundaryOutput));
+    const bool crossPageMatches = std::memcmp(boundaryInput, boundaryOutput, sizeof(boundaryInput)) == 0;
+    const std::uint8_t overflowByte = 0x55;
+    const bool budgetEnforced = !boundaryMemory.write(2 * kPageSize, &overflowByte, sizeof(overflowByte));
+
     result.rax = cpu.registers[0];
     result.instructions = cpu.instructionsExecuted;
-    result.passed = cpu.halted && result.rax == 42 && result.instructions == 3;
-    result.message = result.passed ? "x86-64 smoke test passed" : "Unexpected CPU state";
+    result.passed = crossPageWrite && crossPageRead && crossPageMatches && budgetEnforced &&
+                    boundaryMemory.pageCount() == 2;
+    result.message = result.passed
+        ? "CPU smoke test and guest-memory boundary tests passed"
+        : "Guest-memory boundary or budget test failed";
     return result;
 }
 
