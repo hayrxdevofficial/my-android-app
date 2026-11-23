@@ -82,10 +82,10 @@ Java_com_hayrx_ps4emu_MainActivity_nativeLoadElf(JNIEnv* env, jobject, jbyteArra
         gLoadedAddressSpace = std::move(addressSpace);
     }
     output << "ELF loaded into PSHere virtual memory"
-           << "\\nEntry point: 0x" << std::hex << loaded.entryPoint
-           << "\\nInitial RSP: 0x" << loaded.stackPointer
-           << std::dec << "\\nLoadable segments: " << loaded.loadedSegments
-           << "\\nMemory permissions: per-page R/W/X"
-           << "\\nExecution: not started; dynamic linking and process ABI are not implemented";
+           << "\nEntry point: 0x" << std::hex << loaded.entryPoint
+           << "\nInitial RSP: 0x" << loaded.stackPointer
+           << std::dec << "\nLoadable segments: " << loaded.loadedSegments
+           << "\nMemory permissions: per-page R/W/X"
+           << "\nExecution: not started; dynamic linking and process ABI are not implemented";
     return env->NewStringUTF(output.str().c_str());
 }
