@@ -89,7 +89,7 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
         page.addView(scroll)
 
         content.addView(label("PS4 EMULATOR", 28, 0xFFFFFFFF.toInt()))
-        content.addView(label("PSHERE NATIVE CORE • VERSION 0.5.0", 11, 0xFF8EA4C8.toInt()))
+        content.addView(label("PSHERE NATIVE CORE • VERSION 0.6.0", 11, 0xFF8EA4C8.toInt()))
         content.addView(label("Compatibility prototype. PS4 games do not run yet.", 14, 0xFFFFC66D.toInt()))
 
         content.addView(section("EMULATOR PROFILE"))
