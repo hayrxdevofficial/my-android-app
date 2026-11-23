@@ -2,7 +2,7 @@
 
 PSHere is an experimental Android frontend and native x86-64 execution-core prototype. It is **not a working PS4 emulator** and does not boot commercial PS4 games.
 
-## Version 0.7.0
+## Version 1.0.0 (first test build)
 
 - Android application with a C++17 NDK native library and JNI bridge.
 - Android launcher label: `Hayrulla004004_Dev.ps4emulator`.
@@ -16,6 +16,8 @@ PSHere is an experimental Android frontend and native x86-64 execution-core prot
 - ELF64 `ET_EXEC` and `ET_DYN` PT_LOAD loading, BSS zero-fill, entry-point validation and an initial 8 MiB stack.
 - ET_DYN fixed load bias and a limited RELA relocator for `R_X86_64_RELATIVE` and selected locally-defined symbol relocations.
 - Android file picker and bounded execution of a loaded ELF entry point (500,000 instructions per UI run).
+- Official Sony PS4 PUP download through Android DownloadManager, with live byte-based percentage/progress display.
+- Automatic copy/import of the completed PUP into the app-private `files/firmware` directory.
 - Self-tests for CPU arithmetic/stack, ModRM/SIB memory addressing, virtual memory, page-table translation and synthetic ELF loading.
 
 ## Important limitations
@@ -26,7 +28,7 @@ The ELF loader is not a complete dynamic linker. It rejects `PT_INTERP` and exte
 
 The x86-64 interpreter remains a small subset. SIMD, many integer instructions, complete flags/exceptions, segment bases and full instruction decoding are missing. ELF execution stops on HLT, unsupported instructions, memory/permission faults or the instruction budget.
 
-PS4 games still require substantially more work: PS4 SELF handling, kernel and system-library compatibility, syscalls, threads, GPU/Vulkan command translation, shader translation, audio, filesystem, timers and a much broader CPU implementation. This project does not decrypt Sony firmware or launch PS4 titles.
+PS4 games still require substantially more work: PS4 SELF handling, kernel and system-library compatibility, syscalls, threads, GPU/Vulkan command translation, shader translation, audio, filesystem, timers and a much broader CPU implementation. This project does not decrypt or install Sony firmware as a running PS4 operating system, and does not launch PS4 titles. The PUP workflow only downloads and imports the package into app storage; it is not a firmware installer or emulator boot path.
 
 ## Memory profile
 
