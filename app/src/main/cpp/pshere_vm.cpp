@@ -273,127 +273,195 @@ ElfLoadResult Elf64Loader::loadStaticExecutable(VirtualAddressSpace& as,
                                                 std::size_t size) {
     ElfLoadResult result;
     if (data == nullptr || size < sizeof(Elf64_Ehdr) || size > kMaxElfBytes) {
-        result.message = "ELF file size is invalid";
-        return result;
+        result.message = "ELF file size is invalid"; return result;
     }
     Elf64_Ehdr header{};
     std::memcpy(&header, data, sizeof(header));
     if (std::memcmp(header.e_ident, ELFMAG, SELFMAG) != 0 ||
-        header.e_ident[EI_CLASS] != ELFCLASS64 ||
-        header.e_ident[EI_DATA] != ELFDATA2LSB ||
-        header.e_ident[EI_VERSION] != EV_CURRENT ||
-        header.e_machine != EM_X86_64 || header.e_version != EV_CURRENT) {
-        result.message = "Expected a little-endian x86-64 ELF64 executable";
-        return result;
+        header.e_ident[EI_CLASS] != ELFCLASS64 || header.e_ident[EI_DATA] != ELFDATA2LSB ||
+        header.e_ident[EI_VERSION] != EV_CURRENT || header.e_machine != EM_X86_64 ||
+        header.e_version != EV_CURRENT) {
+        result.message = "Expected a little-endian x86-64 ELF64 executable"; return result;
     }
-    if (header.e_type != ET_EXEC) {
-        result.message = "Only static ET_EXEC images are supported in this loader milestone";
-        return result;
+    if (header.e_type != ET_EXEC && header.e_type != ET_DYN) {
+        result.message = "Only x86-64 ET_EXEC and ET_DYN images are supported"; return result;
     }
-    if (header.e_ehsize != sizeof(Elf64_Ehdr) ||
-        header.e_phentsize != sizeof(Elf64_Phdr) ||
+    if (header.e_ehsize != sizeof(Elf64_Ehdr) || header.e_phentsize != sizeof(Elf64_Phdr) ||
         header.e_phnum == 0 || header.e_phnum > 128) {
-        result.message = "ELF program-header layout is unsupported";
-        return result;
+        result.message = "ELF program-header layout is unsupported"; return result;
     }
     const std::uint64_t phBytes = static_cast<std::uint64_t>(header.e_phnum) * sizeof(Elf64_Phdr);
     if (header.e_phoff > size || phBytes > size - header.e_phoff) {
-        result.message = "ELF program-header table is outside the file";
-        return result;
+        result.message = "ELF program-header table is outside the file"; return result;
     }
 
+    const std::uint64_t loadBias = header.e_type == ET_DYN ? 0x40000000ULL : 0ULL;
     std::map<std::uint64_t, std::uint8_t> pagePermissions;
-    std::uint64_t totalMemory = 0;
+    std::uint64_t totalMemory = 0, dynamicAddress = 0, dynamicSize = 0;
     for (std::uint16_t i = 0; i < header.e_phnum; ++i) {
         Elf64_Phdr ph{};
         std::memcpy(&ph, data + header.e_phoff + static_cast<std::uint64_t>(i) * sizeof(ph), sizeof(ph));
         if (ph.p_type == PT_INTERP) {
-            result.message = "Dynamic ELF interpreters are not supported yet";
-            return result;
+            result.message = "PT_INTERP is unsupported: no guest dynamic linker/runtime is available"; return result;
+        }
+        if (ph.p_type == PT_DYNAMIC) {
+            if (ph.p_memsz > kMaxLoadedBytes || ph.p_vaddr > UINT64_MAX - loadBias) {
+                result.message = "ELF dynamic section bounds are invalid"; return result;
+            }
+            dynamicAddress = ph.p_vaddr + loadBias;
+            dynamicSize = ph.p_memsz;
         }
         if (ph.p_type != PT_LOAD) continue;
         if (ph.p_filesz > ph.p_memsz || ph.p_offset > size || ph.p_filesz > size - ph.p_offset ||
-            ph.p_memsz == 0 || ph.p_memsz > kMaxLoadedBytes - totalMemory) {
-            result.message = "ELF load segment has invalid bounds";
-            return result;
+            ph.p_memsz == 0 || ph.p_memsz > kMaxLoadedBytes - totalMemory ||
+            ph.p_vaddr > UINT64_MAX - loadBias) {
+            result.message = "ELF load segment has invalid bounds"; return result;
         }
         if (ph.p_align > 1 && ((ph.p_align & (ph.p_align - 1)) != 0 ||
             (ph.p_vaddr % ph.p_align) != (ph.p_offset % ph.p_align))) {
-            result.message = "ELF segment alignment is invalid";
-            return result;
+            result.message = "ELF segment alignment is invalid"; return result;
         }
+        const std::uint64_t segmentAddress = ph.p_vaddr + loadBias;
         std::uint64_t segmentEnd = 0;
-        if (!rangeEnd(ph.p_vaddr, ph.p_memsz, segmentEnd)) {
-            result.message = "ELF segment uses a non-user or overflowing virtual address";
-            return result;
+        if (!rangeEnd(segmentAddress, ph.p_memsz, segmentEnd)) {
+            result.message = "ELF segment uses a non-user or overflowing virtual address"; return result;
         }
-        const std::uint64_t firstPage = pageDown(ph.p_vaddr);
+        const std::uint64_t firstPage = pageDown(segmentAddress);
         std::uint64_t lastPage = 0;
         if (!pageUp(segmentEnd, lastPage)) {
-            result.message = "ELF segment page alignment overflow";
-            return result;
+            result.message = "ELF segment page alignment overflow"; return result;
         }
         for (std::uint64_t page = firstPage; page < lastPage; page += kPageSize) {
             if (!as.isMapped(page) && !as.map(page, kPageSize, MemRead | MemWrite)) {
-                result.message = "Could not allocate ELF virtual pages";
-                return result;
+                result.message = "Could not allocate ELF virtual pages"; return result;
             }
             std::uint8_t permissions = 0;
-            if ((ph.p_flags & PF_R) != 0) permissions |= MemRead;
-            if ((ph.p_flags & PF_W) != 0) permissions |= MemWrite;
-            if ((ph.p_flags & PF_X) != 0) permissions |= MemExecute;
+            if (ph.p_flags & PF_R) permissions |= MemRead;
+            if (ph.p_flags & PF_W) permissions |= MemWrite;
+            if (ph.p_flags & PF_X) permissions |= MemExecute;
             pagePermissions[page] |= permissions;
             if ((pagePermissions[page] & (MemWrite | MemExecute)) == (MemWrite | MemExecute)) {
-                result.message = "ELF segment layout would create a writable-executable page";
-                return result;
+                result.message = "ELF segment layout would create a writable-executable page"; return result;
             }
         }
-        if (ph.p_filesz > 0 && !as.write(ph.p_vaddr, data + ph.p_offset, static_cast<std::size_t>(ph.p_filesz))) {
-            result.message = "Could not copy ELF segment bytes";
-            return result;
+        if (ph.p_filesz && !as.write(segmentAddress, data + ph.p_offset, static_cast<std::size_t>(ph.p_filesz))) {
+            result.message = "Could not copy ELF segment bytes"; return result;
         }
         std::vector<std::uint8_t> zeros(4096, 0);
         std::uint64_t bss = ph.p_memsz - ph.p_filesz;
-        std::uint64_t bssAddress = ph.p_vaddr + ph.p_filesz;
-        while (bss > 0) {
+        std::uint64_t bssAddress = segmentAddress + ph.p_filesz;
+        while (bss) {
             const std::size_t amount = static_cast<std::size_t>(std::min<std::uint64_t>(bss, zeros.size()));
             if (!as.write(bssAddress, zeros.data(), amount)) {
-                result.message = "Could not initialize ELF zero-filled segment tail";
-                return result;
+                result.message = "Could not initialize ELF zero-filled segment tail"; return result;
             }
-            bssAddress += amount;
-            bss -= amount;
+            bssAddress += amount; bss -= amount;
         }
         totalMemory += ph.p_memsz;
         ++result.loadedSegments;
     }
-    if (result.loadedSegments == 0) {
-        result.message = "ELF contains no loadable segments";
-        return result;
+    if (!result.loadedSegments) {
+        result.message = "ELF contains no loadable segments"; return result;
+    }
+
+    // A deliberately bounded in-process relocator: RELA relative relocations and
+    // locally-defined x86-64 symbols only. External DT_NEEDED libraries are rejected.
+    if (dynamicAddress && dynamicSize) {
+        if (dynamicSize > 1024 * sizeof(Elf64_Dyn) || dynamicSize % sizeof(Elf64_Dyn)) {
+            result.message = "ELF dynamic table size is invalid"; return result;
+        }
+        std::uint64_t relaPointer = 0, relaSize = 0, relaEntrySize = sizeof(Elf64_Rela);
+        std::uint64_t symtabPointer = 0, symEntrySize = sizeof(Elf64_Sym);
+        bool hasNeeded = false;
+        for (std::uint64_t offset = 0; offset < dynamicSize; offset += sizeof(Elf64_Dyn)) {
+            Elf64_Dyn dyn{};
+            if (!as.read(dynamicAddress + offset, &dyn, sizeof(dyn))) {
+                result.message = "Could not read ELF dynamic table"; return result;
+            }
+            if (dyn.d_tag == DT_NULL) break;
+            switch (dyn.d_tag) {
+                case DT_NEEDED: hasNeeded = true; break;
+                case DT_RELA: relaPointer = dyn.d_un.d_ptr; break;
+                case DT_RELASZ: relaSize = dyn.d_un.d_val; break;
+                case DT_RELAENT: relaEntrySize = dyn.d_un.d_val; break;
+                case DT_SYMTAB: symtabPointer = dyn.d_un.d_ptr; break;
+                case DT_SYMENT: symEntrySize = dyn.d_un.d_val; break;
+                case DT_REL:
+                case DT_RELSZ:
+                case DT_JMPREL:
+                case DT_PLTRELSZ:
+                    if (dyn.d_un.d_val != 0) {
+                        result.message = "REL/PLT relocation tables are not supported; use RELA"; return result;
+                    }
+                    break;
+                default: break;
+            }
+        }
+        if (hasNeeded) {
+            result.message = "ELF requires DT_NEEDED shared libraries; external dynamic linking is not implemented"; return result;
+        }
+        if (relaSize) {
+            if (!relaPointer || relaEntrySize != sizeof(Elf64_Rela) ||
+                relaSize % sizeof(Elf64_Rela) || relaSize > 16ULL * 1024ULL * 1024ULL) {
+                result.message = "ELF RELA table metadata is invalid"; return result;
+            }
+            const std::uint64_t relaAddress = relaPointer + loadBias;
+            for (std::uint64_t offset = 0; offset < relaSize; offset += sizeof(Elf64_Rela)) {
+                Elf64_Rela rela{};
+                if (!as.read(relaAddress + offset, &rela, sizeof(rela))) {
+                    result.message = "ELF RELA table is outside mapped image"; return result;
+                }
+                const std::uint32_t type = ELF64_R_TYPE(rela.r_info);
+                const std::uint32_t symbolIndex = ELF64_R_SYM(rela.r_info);
+                std::uint64_t value = 0;
+                if (type == R_X86_64_NONE) continue;
+                if (type == R_X86_64_RELATIVE && symbolIndex == 0) {
+                    value = loadBias + static_cast<std::uint64_t>(rela.r_addend);
+                } else if (type == R_X86_64_64 || type == R_X86_64_GLOB_DAT ||
+                           type == R_X86_64_JUMP_SLOT) {
+                    if (!symtabPointer || symEntrySize != sizeof(Elf64_Sym) || symbolIndex > 1000000U) {
+                        result.message = "ELF symbol relocation metadata is invalid"; return result;
+                    }
+                    Elf64_Sym symbol{};
+                    const std::uint64_t symbolAddress = symtabPointer + loadBias +
+                        static_cast<std::uint64_t>(symbolIndex) * sizeof(Elf64_Sym);
+                    if (!as.read(symbolAddress, &symbol, sizeof(symbol)) || symbol.st_shndx == SHN_UNDEF) {
+                        result.message = "ELF relocation references an unresolved external symbol"; return result;
+                    }
+                    value = loadBias + symbol.st_value;
+                    if (type == R_X86_64_64) value += static_cast<std::uint64_t>(rela.r_addend);
+                } else {
+                    result.message = "Unsupported x86-64 ELF relocation type " + std::to_string(type); return result;
+                }
+                const std::uint64_t target = loadBias + rela.r_offset;
+                if (!as.write(target, &value, sizeof(value))) {
+                    result.message = "Could not apply ELF relocation to target page"; return result;
+                }
+            }
+        }
     }
 
     for (const auto& page : pagePermissions) {
-        if (page.second == 0 || !as.protect(page.first, kPageSize, page.second)) {
-            result.message = "Could not apply ELF segment memory permissions";
-            return result;
+        if (!page.second || !as.protect(page.first, kPageSize, page.second)) {
+            result.message = "Could not apply ELF segment memory permissions"; return result;
         }
     }
-    if (!as.hasPermission(header.e_entry, MemExecute)) {
-        result.message = "ELF entry point is not inside an executable segment";
-        return result;
+    const std::uint64_t entry = header.e_entry + loadBias;
+    if (!as.hasPermission(entry, MemExecute)) {
+        result.message = "ELF entry point is not inside an executable segment"; return result;
     }
-
     const std::uint64_t stackTop = kDefaultStackTop;
     const std::uint64_t stackBase = stackTop - kStackSize;
     if (!as.map(stackBase, kStackSize, MemRead | MemWrite)) {
-        result.message = "Could not allocate initial user stack";
-        return result;
+        result.message = "Could not allocate initial user stack"; return result;
     }
     result.success = true;
-    result.entryPoint = header.e_entry;
+    result.entryPoint = entry;
     result.stackPointer = stackTop;
-    result.imageBase = 0;
-    result.message = "Static x86-64 ELF loaded with segment permissions and an initial stack";
+    result.imageBase = loadBias;
+    result.message = header.e_type == ET_DYN
+        ? "ET_DYN image loaded with load bias and supported RELA relocations; external libraries are not linked"
+        : "ET_EXEC image loaded with segment permissions and initial stack";
     return result;
 }
 
