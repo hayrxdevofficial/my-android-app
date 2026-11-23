@@ -214,9 +214,10 @@ bool VirtualAddressSpace::protect(std::uint64_t address, std::uint64_t size, std
     if (!alignedRange(address, size) || permissions == 0 || (permissions & ~7U) != 0) return false;
     for (std::uint64_t offset = 0; offset < size; offset += kPageSize)
         if (pages_.find((address + offset) / kPageSize) == pages_.end()) return false;
-    for (std::uint64_t offset = 0; offset < size; offset += kPageSize)
+    for (std::uint64_t offset = 0; offset < size; offset += kPageSize) {
         if (!pageTables_.protect(address + offset, permissions)) return false;
         pages_[(address + offset) / kPageSize].permissions = permissions;
+    }
     return true;
 }
 
