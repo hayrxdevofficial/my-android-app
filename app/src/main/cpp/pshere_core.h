@@ -62,13 +62,13 @@ enum class StepResult {
     MemoryFault
 };
 
-class X64Interpreter {
+class VirtualAddressSpace;\n\nclass X64Interpreter {
 public:
-    explicit X64Interpreter(GuestMemory& memory);
+    explicit X64Interpreter(GuestMemory& memory);\n    explicit X64Interpreter(VirtualAddressSpace& addressSpace);
     StepResult step(CpuState& state);
     static const char* resultName(StepResult result);
 private:
-    GuestMemory& memory_;
+    GuestMemory* memory_ = nullptr;\n    VirtualAddressSpace* addressSpace_ = nullptr;
 };
 
 struct SelfTestResult {
