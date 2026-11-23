@@ -152,6 +152,10 @@ bool GuestMemory::read(std::uint64_t address, void* destination, std::size_t len
 std::uint64_t GuestMemory::budget() const { return budgetBytes_; }
 std::uint64_t GuestMemory::committed() const { return static_cast<std::uint64_t>(pages_.size()) * kPageSize; }
 std::size_t GuestMemory::pageCount() const { return pages_.size(); }
+bool GuestMemory::releasePage(std::uint64_t address) {
+    if ((address % kPageSize) != 0) return false;
+    return pages_.erase(address / kPageSize) != 0;
+}
 
 CpuState::CpuState() {
     registers[RSP] = kDefaultStackTop;
