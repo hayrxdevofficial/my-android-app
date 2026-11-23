@@ -310,7 +310,17 @@ bool runElfLoaderSelfTest(std::string& message) {
         message = loaded.message.empty() ? "ELF loader self-test failed" : loaded.message;
         return false;
     }
-    message = "Static ELF64 segment, BSS zero-fill, executable/read-only permissions and stack tests passed";
+    CpuState guestCpu;
+    guestCpu.rip = loaded.entryPoint;
+    guestCpu.registers[RSP] = loaded.stackPointer;
+    X64Interpreter interpreter(as);
+    interpreter.step(guestCpu);
+    interpreter.step(guestCpu);
+    if (!guestCpu.halted || guestCpu.instructionsExecuted != 2) {
+        message = "ELF entry point could not execute through protected virtual memory";
+        return false;
+    }
+    message = "Static ELF64 segment, BSS zero-fill, R/W/X protection, initial stack and CPU entry execution tests passed";
     return true;
 }
 
