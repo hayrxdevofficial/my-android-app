@@ -1,6 +1,7 @@
 #include <jni.h>
 
 #include "pshere_core.h"
+#include "pshere_vm.h"
 
 #include <sstream>
 
@@ -18,6 +19,8 @@ Java_com_hayrx_ps4emu_MainActivity_nativeCoreInfo(JNIEnv* env, jobject) {
            << "Host architecture: " << architecture << "\n"
            << "Guest target: x86-64 (experimental subset)\nRegisters: RAX-R15, RIP, RFLAGS\nStack: 64-bit PUSH/POP/CALL/RET\nALU: MOV, ADD, SUB, XOR, CMP, TEST\nControl flow: JMP, JE/JZ, JNE/JNZ\n"
            << "Guest RAM budget: 6 GiB, allocated on demand\n"
+           << "Virtual memory: page mapping + R/W/X permissions + protected instruction fetch\n"
+           << "ELF: static little-endian x86-64 ET_EXEC loader + zero-filled BSS + initial stack\n"
            << "Implemented: sparse guest pages, MOV, ADD, SUB, XOR, CMP, TEST, PUSH, POP, CALL, RET, JMP, Jcc, NOP, HLT\n"
            << "Not implemented: PS4 kernel, SELF decryption, GPU, audio, game boot";
     return env->NewStringUTF(output.str().c_str());
@@ -26,9 +29,15 @@ Java_com_hayrx_ps4emu_MainActivity_nativeCoreInfo(JNIEnv* env, jobject) {
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_hayrx_ps4emu_MainActivity_nativeRunSelfTest(JNIEnv* env, jobject) {
     const auto result = pshere::runSelfTest();
+    std::string vmMessage;
+    std::string elfMessage;
+    const bool vmPassed = pshere::runVirtualMemorySelfTest(vmMessage);
+    const bool elfPassed = pshere::runElfLoaderSelfTest(elfMessage);
     std::ostringstream output;
     output << (result.passed ? "PASS" : "FAIL") << ": " << result.message
            << "\nRAX = " << result.rax
-           << "\nInstructions = " << result.instructions;
+           << "\nInstructions = " << result.instructions
+           << "\n" << (vmPassed ? "PASS" : "FAIL") << ": " << vmMessage
+           << "\n" << (elfPassed ? "PASS" : "FAIL") << ": " << elfMessage;
     return env->NewStringUTF(output.str().c_str());
 }
