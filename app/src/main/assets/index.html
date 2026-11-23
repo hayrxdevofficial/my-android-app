@@ -35,7 +35,10 @@ select{width:100%;padding:10px}.hint{font-size:11px;color:var(--muted);line-heig
 </aside>
 <section id="viewport"><canvas id="view"></canvas><div class="hud"><span class="pill">● СЦЕНА 01</span><span class="pill" id="objectCount">0 объектов</span></div><div id="empty"><strong>Твоя 3D-сцена</strong><small>Добавь персонажа или импортируй свою модель</small></div></section>
 <aside class="panel" id="props"><h3>Анимация и свойства</h3>
-<div class="prop"><label>Выбрать анимацию</label><select id="anim"><option value="">Нет анимации</option></select></div>
+<div class="prop"><label>Готовая анимация модели</label><select id="anim"><option value="">Нет анимации</option></select></div>
+<div class="prop"><label>Часть тела / кость</label><select id="bone"></select></div>
+<div class="prop"><label>Поворот кости <b id="boneVal">0°</b></label><input id="boneAngle" type="range" min="-90" max="90" value="0"></div>
+<button id="keyframe" style="width:100%">◆ Добавить ключевой кадр</button><button id="resetPose" style="width:100%;margin-top:7px">↺ Сбросить позу</button>
 <div class="prop"><label>Скорость <b id="speedVal">1.0×</b></label><input id="speed" type="range" min=".1" max="2.5" step=".1" value="1"></div>
 <div class="prop"><label>Поворот <b id="rotVal">0°</b></label><input id="rotation" type="range" min="0" max="360" value="0"></div>
 <div class="prop"><label>Масштаб <b id="scaleVal">1.0</b></label><input id="scale" type="range" min=".3" max="2.5" step=".1" value="1"></div>
@@ -44,7 +47,7 @@ select{width:100%;padding:10px}.hint{font-size:11px;color:var(--muted);line-heig
 <button id="stop" style="width:100%;margin-top:7px">■ Стоп</button>
 <p class="hint">Выбери импортированную модель, чтобы управлять её клипами анимации.</p>
 </aside>
-<section class="panel" id="timeline"><div><h3>Таймлайн</h3><div style="font-size:12px;color:var(--muted)">Дорожка персонажа</div><div style="margin-top:9px;font-weight:800;color:var(--lime)">● Анимация</div></div><div class="trackarea"><div class="trackhead"><span style="font-size:12px">Последовательность кадров</span><span class="hint" id="timeLabel">00:00 / 00:10</span></div><div class="ruler"><span>0s</span><span>2s</span><span>4s</span><span>6s</span><span>8s</span><span>10s</span></div><div class="track"><div class="clip">Анимация персонажа</div><div class="playhead" id="head"></div></div><div class="track"><div class="clip" style="background:#56cbd7;left:15%;width:25%">Движение</div></div><div class="hint">Дорожки сцены · перемещение и действия</div></div></section>
+<section class="panel" id="timeline"><div><h3>Таймлайн</h3><div style="font-size:12px;color:var(--muted)">Дорожка персонажа</div><div style="margin-top:9px;font-weight:800;color:var(--lime)">● Анимация</div></div><div class="trackarea"><div class="trackhead"><span style="font-size:12px">Последовательность кадров</span><span class="hint" id="timeLabel">00:00 / 00:10</span></div><div class="ruler"><span>0s</span><span>2s</span><span>4s</span><span>6s</span><span>8s</span><span>10s</span></div><div class="track"><div id="keyDots"></div><div class="playhead" id="head"></div></div><input id="scrub" type="range" min="0" max="10" step=".1" value="0" style="width:100%;accent-color:#ff7474"><div class="hint">◆ Поставь персонажа в позу и добавь ключевой кадр. Передвинь время, измени позу и добавь следующий кадр.</div></div></section>
 </main>
 <script type="module">
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';
@@ -59,23 +62,36 @@ const controls=new OrbitControls(camera,renderer.domElement);controls.target.set
 scene.add(new THREE.HemisphereLight(0xc9e3ff,0x28334a,2));const light=new THREE.DirectionalLight(0xffffff,2.4);light.position.set(4,8,5);scene.add(light);
 const grid=new THREE.GridHelper(20,40,0x536887,0x263750);scene.add(grid);
 const floor=new THREE.Mesh(new THREE.PlaneGeometry(200,200),new THREE.MeshStandardMaterial({color:0x151f32,roughness:1}));floor.rotation.x=-Math.PI/2;floor.position.y=-.015;scene.add(floor);
-const clock=new THREE.Clock(),loader=new GLTFLoader(),mixers=[];let objects=[],selected=null,playing=false,elapsed=0;
+const clock=new THREE.Clock(),loader=new GLTFLoader(),mixers=[];let objects=[],selected=null,playing=false,elapsed=0,currentTime=0;
+const DURATION=10;
+function findBones(root){const out=[];root.traverse(o=>{if(o.isBone)out.push(o)});return out}
+function applyPose(entry,t){if(!entry||!entry.keys.length)return;const keys=entry.keys.slice().sort((a,b)=>a.t-b.t);let a=keys[0],b=keys[keys.length-1];for(let i=0;i<keys.length-1;i++){if(t>=keys[i].t&&t<=keys[i+1].t){a=keys[i];b=keys[i+1];break}}
+const u=THREE.MathUtils.clamp((t-a.t)/Math.max(.0001,b.t-a.t),0,1);for(const bone of entry.bones){const av=a.bones[bone.name]||[0,0,0],bv=b.bones[bone.name]||av;bone.rotation.set(THREE.MathUtils.lerp(av[0],bv[0],u),THREE.MathUtils.lerp(av[1],bv[1],u),THREE.MathUtils.lerp(av[2],bv[2],u))}}
+function renderKeys(){const el=document.querySelector('#keyDots');if(!el)return;el.innerHTML=(selected?.keys||[]).map(k=>'<span style="position:absolute;left:'+(k.t/DURATION*100)+'%;top:8px;width:10px;height:10px;border-radius:50%;background:#b8ef4a;border:2px solid white;transform:translateX(-50%)"></span>').join('')}
+
 function resize(){const w=canvas.clientWidth,h=canvas.clientHeight;if(!w||!h)return;renderer.setSize(w,h,false);camera.aspect=w/h;camera.updateProjectionMatrix()}
 new ResizeObserver(resize).observe(canvas);
-function makeCharacter(){const g=new THREE.Group();const mat=new THREE.MeshStandardMaterial({color:0xb8ef4c,roughness:.7}),dark=new THREE.MeshStandardMaterial({color:0x26334b});
-function part(geo,m,x,y,z){const o=new THREE.Mesh(geo,m);o.position.set(x,y,z);g.add(o);return o}
-part(new THREE.CapsuleGeometry(.34,.65,5,10),mat,0,1.15,0);part(new THREE.SphereGeometry(.27,20,16),new THREE.MeshStandardMaterial({color:0xffc99c}),0,1.85,0);
-part(new THREE.BoxGeometry(.16,.62,.18),mat,-.43,1.2,0).rotation.z=-.25;part(new THREE.BoxGeometry(.16,.62,.18),mat,.43,1.2,0).rotation.z=.25;
-part(new THREE.BoxGeometry(.2,.65,.22),dark,-.16,.42,0);part(new THREE.BoxGeometry(.2,.65,.22),dark,.16,.42,0);
-const ring=new THREE.Mesh(new THREE.TorusGeometry(.55,.018,8,40),new THREE.MeshBasicMaterial({color:0x55d9e8}));ring.rotation.x=Math.PI/2;ring.position.y=.03;g.add(ring);return g}
-function addObject(obj,name,clips=[]){scene.add(obj);const entry={obj,name,mixer:null,actions:[],clips};if(clips.length){entry.mixer=new THREE.AnimationMixer(obj);entry.actions=clips.map(c=>entry.mixer.clipAction(c));mixers.push(entry.mixer)}objects.push(entry);select(entry);updateList();return entry}
+function makeCharacter(){
+const root=new THREE.Group(),bones=[];
+const green=new THREE.MeshStandardMaterial({color:0xb8ef4c,roughness:.7}),dark=new THREE.MeshStandardMaterial({color:0x26334b}),skin=new THREE.MeshStandardMaterial({color:0xffc99c});
+function mesh(parent,geo,mat,pos){const m=new THREE.Mesh(geo,mat);m.position.set(...pos);parent.add(m)}
+function pivot(name,pos,parent){const p=new THREE.Group();p.name=name;p.position.set(...pos);parent.add(p);bones.push(p);return p}
+const hips=pivot('Hips',[0,.95,0],root);mesh(hips,new THREE.CapsuleGeometry(.34,.65,5,10),green,[0,.2,0]);
+const head=pivot('Head',[0,.75,0],hips);mesh(head,new THREE.SphereGeometry(.27,20,16),skin,[0,.15,0]);
+const leftArm=pivot('LeftArm',[-.42,.48,0],hips);mesh(leftArm,new THREE.CapsuleGeometry(.09,.48,4,8),green,[0,-.28,0]);
+const rightArm=pivot('RightArm',[.42,.48,0],hips);mesh(rightArm,new THREE.CapsuleGeometry(.09,.48,4,8),green,[0,-.28,0]);
+const leftLeg=pivot('LeftLeg',[-.17,-.15,0],hips);mesh(leftLeg,new THREE.BoxGeometry(.2,.65,.22),dark,[0,-.32,0]);
+const rightLeg=pivot('RightLeg',[.17,-.15,0],hips);mesh(rightLeg,new THREE.BoxGeometry(.2,.65,.22),dark,[0,-.32,0]);
+const ring=new THREE.Mesh(new THREE.TorusGeometry(.55,.018,8,40),new THREE.MeshBasicMaterial({color:0x55d9e8}));ring.rotation.x=Math.PI/2;ring.position.y=.03;root.add(ring);
+return {root,bones}}
+function addObject(obj,name,clips=[],bones=[]){scene.add(obj);const entry={obj,name,mixer:null,actions:[],clips,bones,keys:[]};if(clips.length){entry.mixer=new THREE.AnimationMixer(obj);entry.actions=clips.map(c=>entry.mixer.clipAction(c));mixers.push(entry.mixer)}objects.push(entry);select(entry);updateList();return entry}
 function select(e){selected=e;document.querySelector('#empty').style.display='none';const s=document.querySelector('#anim');s.innerHTML='<option value="">Нет анимации</option>';e.actions.forEach((a,i)=>{const o=document.createElement('option');o.value=i;o.textContent=e.clips[i].name||'Анимация '+(i+1);s.append(o)});document.querySelector('#rotation').value=Math.round(THREE.MathUtils.radToDeg(e.obj.rotation.y));document.querySelector('#scale').value=e.obj.scale.x;document.querySelector('#pos').value=e.obj.position.x;document.querySelector('#rotVal').textContent=Math.round(THREE.MathUtils.radToDeg(e.obj.rotation.y))+'°';document.querySelector('#scaleVal').textContent=e.obj.scale.x.toFixed(1);document.querySelector('#posVal').textContent=e.obj.position.x.toFixed(1)}
 function updateList(){document.querySelector('#modelList').innerHTML=objects.map((e,i)=>'<div class="modelrow" data-i="'+i+'"><span>◈ '+e.name+'</span><span>'+(selected===e?'●':'')+'</span></div>').join('');document.querySelectorAll('.modelrow').forEach(el=>el.onclick=()=>select(objects[+el.dataset.i]));document.querySelector('#objectCount').textContent=objects.length+' объектов'}
-function demo(){const g=makeCharacter();addObject(g,'Персонаж '+(objects.length+1))}
+function demo(){const rig=makeCharacter();addObject(rig.root,'Персонаж '+(objects.length+1),[],rig.bones)}
 document.querySelector('#addDemo').onclick=demo;document.querySelector('#addDemo2').onclick=demo;
 document.querySelector('#addCube').onclick=()=>{const o=new THREE.Mesh(new THREE.BoxGeometry(1,1,1),new THREE.MeshStandardMaterial({color:0x58cbd8}));o.position.y=.5;addObject(o,'Куб')};
 document.querySelector('#addSphere').onclick=()=>{const o=new THREE.Mesh(new THREE.SphereGeometry(.6,32,20),new THREE.MeshStandardMaterial({color:0xffa64d}));o.position.y=.6;addObject(o,'Сфера')};
-document.querySelector('#file').onchange=async e=>{const f=e.target.files[0];if(!f)return;try{const buf=await f.arrayBuffer();loader.parse(buf,'',g=>{const obj=g.scene;const box=new THREE.Box3().setFromObject(obj);const size=box.getSize(new THREE.Vector3());obj.position.y-=box.min.y;const max=Math.max(size.x,size.y,size.z);if(max>0)obj.scale.setScalar(2.2/max);addObject(obj,f.name,g.animations);},err=>alert('Не удалось прочитать модель: '+err.message))}catch(err){alert('Ошибка импорта: '+err.message)}e.target.value=''};
+document.querySelector('#file').onchange=async e=>{const f=e.target.files[0];if(!f)return;try{const buf=await f.arrayBuffer();loader.parse(buf,'',g=>{const obj=g.scene;const box=new THREE.Box3().setFromObject(obj);const size=box.getSize(new THREE.Vector3());obj.position.y-=box.min.y;const max=Math.max(size.x,size.y,size.z);if(max>0)obj.scale.setScalar(2.2/max);addObject(obj,f.name,g.animations,findBones(obj));},err=>alert('Не удалось прочитать модель: '+err.message))}catch(err){alert('Ошибка импорта: '+err.message)}e.target.value=''};
 document.querySelector('#anim').onchange=e=>{if(!selected)return;selected.actions.forEach(a=>a.stop());const i=+e.target.value;if(e.target.value!==''&&selected.actions[i]){selected.actions[i].reset().play();playing=true;document.querySelector('#play').textContent='Ⅱ Пауза'}};
 document.querySelector('#speed').oninput=e=>{document.querySelector('#speedVal').textContent=(+e.target.value).toFixed(1)+'×';if(selected?.mixer)selected.mixer.timeScale=+e.target.value};
 document.querySelector('#rotation').oninput=e=>{if(selected)selected.obj.rotation.y=THREE.MathUtils.degToRad(+e.target.value);document.querySelector('#rotVal').textContent=e.target.value+'°'};
