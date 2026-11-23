@@ -48,7 +48,10 @@ bool VirtualAddressSpace::map(std::uint64_t address, std::uint64_t size, std::ui
     for (std::uint64_t offset = 0; offset < size; offset += kPageSize) {
         const std::uint64_t backingAddress = nextBackingPage_ * kPageSize;
         if (!backing_.write(backingAddress, &zero, 1)) {
-            for (const auto page : inserted) pages_.erase(page);
+            for (const auto page : inserted) {
+                const auto it = pages_.find(page);
+                if (it != pages_.end()) { backing_.releasePage(it->second.backingAddress); pages_.erase(it); }
+            }
             return false;
         }
         const std::uint64_t virtualPage = (address + offset) / kPageSize;
@@ -63,8 +66,13 @@ bool VirtualAddressSpace::unmap(std::uint64_t address, std::uint64_t size) {
     if (!alignedRange(address, size)) return false;
     for (std::uint64_t offset = 0; offset < size; offset += kPageSize)
         if (pages_.find((address + offset) / kPageSize) == pages_.end()) return false;
-    for (std::uint64_t offset = 0; offset < size; offset += kPageSize)
-        pages_.erase((address + offset) / kPageSize);
+    for (std::uint64_t offset = 0; offset < size; offset += kPageSize) {
+        const auto it = pages_.find((address + offset) / kPageSize);
+        if (it != pages_.end()) {
+            backing_.releasePage(it->second.backingAddress);
+            pages_.erase(it);
+        }
+    }
     return true;
 }
 
@@ -196,6 +204,10 @@ ElfLoadResult Elf64Loader::loadStaticExecutable(VirtualAddressSpace& as,
             if ((ph.p_flags & PF_W) != 0) permissions |= MemWrite;
             if ((ph.p_flags & PF_X) != 0) permissions |= MemExecute;
             pagePermissions[page] |= permissions;
+            if ((pagePermissions[page] & (MemWrite | MemExecute)) == (MemWrite | MemExecute)) {
+                result.message = "ELF segment layout would create a writable-executable page";
+                return result;
+            }
         }
         if (ph.p_filesz > 0 && !as.write(ph.p_vaddr, data + ph.p_offset, static_cast<std::size_t>(ph.p_filesz))) {
             result.message = "Could not copy ELF segment bytes";
