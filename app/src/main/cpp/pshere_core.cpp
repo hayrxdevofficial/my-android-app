@@ -248,21 +248,21 @@ StepResult X64Interpreter::step(CpuState& state) {
         if (!readCode32( cursor, raw)) return StepResult::MemoryFault;
         cursor += 4;
         const auto value = static_cast<std::uint64_t>(static_cast<std::int64_t>(static_cast<std::int32_t>(raw)));
-        if (!push64(memory_, state, value)) return StepResult::MemoryFault;
+        if (!(addressSpace_ ? push64(*addressSpace_, state, value) : push64(*memory_, state, value))) return StepResult::MemoryFault;
         return finish();
     }
     if (opcode == 0x6A) {
         std::uint8_t raw = 0;
         if (!readCode8( cursor++, raw)) return StepResult::MemoryFault;
         const auto value = static_cast<std::uint64_t>(static_cast<std::int64_t>(static_cast<std::int8_t>(raw)));
-        if (!push64(memory_, state, value)) return StepResult::MemoryFault;
+        if (!(addressSpace_ ? push64(*addressSpace_, state, value) : push64(*memory_, state, value))) return StepResult::MemoryFault;
         return finish();
     }
 
     // RET and relative CALL.
     if (opcode == 0xC3) {
         std::uint64_t target = 0;
-        if (!pop64(memory_, state, target)) return StepResult::MemoryFault;
+        if (!(addressSpace_ ? pop64(*addressSpace_, state, target) : pop64(*memory_, state, target))) return StepResult::MemoryFault;
         state.rip = target;
         ++state.instructionsExecuted;
         return StepResult::Executed;
@@ -272,7 +272,7 @@ StepResult X64Interpreter::step(CpuState& state) {
         if (!readCode32( cursor, raw)) return StepResult::MemoryFault;
         cursor += 4;
         const std::uint64_t returnAddress = cursor;
-        if (!push64(memory_, state, returnAddress)) return StepResult::MemoryFault;
+        if (!(addressSpace_ ? push64(*addressSpace_, state, returnAddress) : push64(*memory_, state, returnAddress))) return StepResult::MemoryFault;
         const auto displacement = static_cast<std::int64_t>(static_cast<std::int32_t>(raw));
         state.rip = static_cast<std::uint64_t>(static_cast<std::int64_t>(cursor) + displacement);
         ++state.instructionsExecuted;
