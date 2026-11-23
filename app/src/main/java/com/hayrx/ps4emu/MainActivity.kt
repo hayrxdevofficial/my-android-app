@@ -15,6 +15,7 @@ import android.os.Looper
 import android.os.ParcelFileDescriptor
 import android.os.Environment
 import android.provider.Settings
+import android.provider.OpenableColumns
 import android.view.Gravity
 import android.view.InputDevice
 import android.view.KeyEvent
@@ -37,6 +38,7 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
     private lateinit var coreStatus: TextView
     private lateinit var firmwareProgressText: TextView
     private lateinit var firmwareProgressBar: ProgressBar
+    private lateinit var pupReport: TextView
     private val mainHandler = Handler(Looper.getMainLooper())
     private var activeFirmwareDownloadId: Long? = null
     private lateinit var inputManager: InputManager
@@ -71,6 +73,7 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
         private const val KEY_RAM_GB = "ram_gb"
         private const val PICKER_CODE = 4102
         private const val ELF_PICKER_CODE = 4103
+        private const val PUP_PICKER_CODE = 4104
 
         private val nativeLibraryLoaded = try { System.loadLibrary("pshere"); true } catch (_: UnsatisfiedLinkError) { false }
     }
@@ -139,7 +142,13 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
         firmwareProgressText = label("Firmware: not downloaded", 13, 0xFF9DB3D5.toInt())
         content.addView(firmwareProgressText)
         content.addView(action("OPEN SONY FIRMWARE PAGE") { openSonyPage() })
-        content.addView(label("Important: this imports the PUP file into PSHere storage; it does NOT install or boot the PS4 operating system. PUP is not a bootable ISO. Firmware parsing and PS4 system compatibility are not implemented.", 12, 0xFFFFC66D.toInt()))
+        content.addView(label("Importing stores the package; it does not install or boot PS4 OS. PUP is not an ELF or bootable ISO.", 12, 0xFFFFC66D.toInt()))
+
+        content.addView(section("PS4 PUP INSPECTOR"))
+        content.addView(label("Analyze the downloaded PUP container without loading the whole firmware into RAM. The first version recognizes the SLB2 outer container and lists its embedded PUP fragments; encrypted fragment contents are not decrypted.", 12, 0xFF9DB3D5.toInt()))
+        content.addView(action("OPEN PS4UPDATE.PUP • INSPECT") { openPupPicker() })
+        pupReport = label("No PUP inspected yet.", 12, 0xFFD4DDF0.toInt())
+        content.addView(pupReport)
         status = label("Network: checking", 14, 0xFFB8C7E0.toInt())
         content.addView(status)
         content.addView(action("REFRESH STATUS & CONTROLLERS") { refreshAll() })
@@ -300,6 +309,104 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
             } catch (e: Exception) { runOnUiThread { firmwareProgressBar.isIndeterminate = false; firmwareProgressText.text = "Import failed: " + e.message; activeFirmwareDownloadId = null } }
         }.start()
     }
+    private fun openPupPicker() {
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "*/*"
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        startActivityForResult(intent, PUP_PICKER_CODE)
+    }
+
+    private fun inspectPup(uri: Uri) {
+        pupReport.text = "Reading PUP header…"
+        Thread {
+            val report = try {
+                val header = ByteArray(512)
+                val input = contentResolver.openInputStream(uri)
+                    ?: throw IllegalArgumentException("Cannot open selected file")
+                input.use { stream ->
+                    var offset = 0
+                    while (offset < header.size) {
+                        val count = stream.read(header, offset, header.size - offset)
+                        if (count < 0) break
+                        offset += count
+                    }
+                    if (offset < 4) throw IllegalArgumentException("File is too small to contain a PUP header")
+                    if (offset < header.size) throw IllegalArgumentException("File is shorter than the 512-byte SLB2 container header")
+                }
+
+                val fileSize = contentResolver.query(uri, arrayOf(OpenableColumns.SIZE), null, null, null)?.use { cursor ->
+                    if (cursor.moveToFirst()) {
+                        val index = cursor.getColumnIndex(OpenableColumns.SIZE)
+                        if (index >= 0 && !cursor.isNull(index)) cursor.getLong(index) else -1L
+                    } else -1L
+                } ?: -1L
+
+                fun u32(buffer: java.nio.ByteBuffer, position: Int): Long =
+                    Integer.toUnsignedLong(buffer.getInt(position))
+                fun safeName(bytes: ByteArray): String {
+                    val end = bytes.indexOf(0).let { if (it < 0) bytes.size else it }
+                    return bytes.copyOfRange(0, end).toString(Charsets.US_ASCII)
+                        .map { if (it.code in 32..126) it else '?' }.joinToString("").trim()
+                }
+
+                val buffer = java.nio.ByteBuffer.wrap(header).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+                val magic = header.copyOfRange(0, 4).joinToString("") { "%02X".format(it.toInt() and 0xFF) }
+                when (magic) {
+                    "534C4232" -> {
+                        val version = u32(buffer, 4)
+                        val flags = u32(buffer, 8)
+                        val entryCount = u32(buffer, 12)
+                        val totalBlocks = u32(buffer, 16)
+                        if (entryCount > 10L) throw IllegalArgumentException("SLB2 entry count $entryCount exceeds the 512-byte header table capacity")
+                        val tableEnd = 0x20L + entryCount * 0x30L
+                        if (tableEnd > 512L) throw IllegalArgumentException("SLB2 entry table exceeds header boundary")
+                        val lines = mutableListOf<String>()
+                        lines += "Format: PS4 SLB2 PUP container"
+                        lines += "Magic: SLB2 (0x534C4232)"
+                        lines += "Container version: $version"
+                        lines += "Flags: 0x" + flags.toString(16)
+                        lines += "Embedded fragments: $entryCount"
+                        lines += "Declared total blocks (512 bytes): $totalBlocks"
+                        lines += "File size: " + if (fileSize >= 0) "$fileSize bytes" else "not reported by provider"
+                        lines += ""
+                        for (i in 0 until entryCount.toInt()) {
+                            val base = 0x20 + i * 0x30
+                            val blockOffset = u32(buffer, base)
+                            val fragmentSize = u32(buffer, base + 4)
+                            val nameBytes = header.copyOfRange(base + 16, base + 48)
+                            val name = safeName(nameBytes).ifBlank { "entry_\${i} (unnamed)" }
+                            val dataOffset = blockOffset * 512L
+                            val endOffset = dataOffset + fragmentSize
+                            val rangeValid = dataOffset >= 512L && endOffset >= dataOffset &&
+                                (fileSize < 0L || endOffset <= fileSize)
+                            lines += "\${i + 1}. $name"
+                            lines += "   Start: \${dataOffset} bytes (sector \${blockOffset})"
+                            lines += "   Size: \${fragmentSize} bytes"
+                            lines += "   Range: " + if (rangeValid) "within file bounds" else "OUT OF BOUNDS / cannot verify"
+                        }
+                        lines += ""
+                        lines += "Result: SLB2 header parsed. Structural inspection only; fragment signatures, encrypted metadata and firmware contents have not been verified or installed."
+                        lines.joinToString("\n")
+                    }
+                    "4F153D1D" -> {
+                        val version = buffer.getShort(4).toInt() and 0xFFFF
+                        val headerSize = buffer.getShort(12).toInt() and 0xFFFF
+                        val metadataSize = buffer.getShort(14).toInt() and 0xFFFF
+                        "Format: PS4 PUP fragment header\nMagic: 4F 15 3D 1D\nVersion field: $version\nHeader size field: $headerSize\nMetadata size field: $metadataSize\nFile size: " +
+                            (if (fileSize >= 0) "$fileSize bytes" else "unknown") +
+                            "\nThe remaining header/metadata is encrypted in retail update packages. This inspector does not decrypt or validate its signature."
+                    }
+                    else -> "Unrecognized file header. First 4 bytes: $magic\nThis file is not recognized as a PS4 SLB2 container or known PS4 PUP fragment."
+                }
+            } catch (error: Exception) {
+                "PUP inspection failed: \${error.message ?: "unknown error"}"
+            }
+            runOnUiThread { pupReport.text = report }
+        }.start()
+    }
+
     private fun openSonyPage() {
         try {
             startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(SONY_SUPPORT)))
@@ -390,6 +497,12 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
     @Deprecated("Document picker callback")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == PUP_PICKER_CODE && resultCode == RESULT_OK) {
+            data?.data?.let { uri ->
+                try { contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) } catch (_: Exception) { }
+                inspectPup(uri)
+            }
+        }
         if (requestCode == ELF_PICKER_CODE && resultCode == RESULT_OK) {
             data?.data?.let { uri -> loadElf(uri) }
         }
