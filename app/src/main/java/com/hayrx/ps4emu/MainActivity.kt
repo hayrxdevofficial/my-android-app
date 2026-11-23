@@ -61,7 +61,7 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
         private const val KEY_RAM_GB = "ram_gb"
         private const val PICKER_CODE = 4102
 
-        init { System.loadLibrary("pshere") }
+        private val nativeLibraryLoaded = try { System.loadLibrary("pshere"); true } catch (_: UnsatisfiedLinkError) { false }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -203,18 +203,23 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
     private external fun nativeRunSelfTest(): String
 
     private fun refreshCoreStatus() {
-        coreStatus.text = try {
-            nativeCoreInfo()
-        } catch (error: UnsatisfiedLinkError) {
-            "PSHere native library failed to load: ${error.message}"
+        coreStatus.text = if (nativeLibraryLoaded) {
+            try { nativeCoreInfo() } catch (error: UnsatisfiedLinkError) {
+                "PSHere native library failed to load: ${error.message}"
+            }
+        } else {
+            "PSHere native library is unavailable for this device ABI."
         }
     }
 
     private fun runCoreSelfTest() {
-        coreStatus.text = try {
-            nativeCoreInfo() + "\n\n" + nativeRunSelfTest()
-        } catch (error: UnsatisfiedLinkError) {
-            "PSHere native library failed to load: ${error.message}"
+        coreStatus.text = if (nativeLibraryLoaded) {
+            try { nativeCoreInfo() + "\n\n" + nativeRunSelfTest() }
+            catch (error: UnsatisfiedLinkError) {
+                "PSHere native library failed to load: ${error.message}"
+            }
+        } else {
+            "PSHere native library is unavailable for this device ABI."
         }
     }
 
