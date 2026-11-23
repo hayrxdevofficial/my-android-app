@@ -1,4 +1,5 @@
 #include "pshere_core.h"
+#include "pshere_vm.h"
 
 #include <algorithm>
 #include <cstring>
@@ -19,6 +20,9 @@ bool fetch32(const GuestMemory& memory, std::uint64_t address, std::uint32_t& va
 bool fetch64(const GuestMemory& memory, std::uint64_t address, std::uint64_t& value) {
     return memory.read(address, &value, sizeof(value));
 }
+bool fetch8(const VirtualAddressSpace& memory, std::uint64_t address, std::uint8_t& value) { return memory.fetch(address, &value, sizeof(value)); }
+bool fetch32(const VirtualAddressSpace& memory, std::uint64_t address, std::uint32_t& value) { return memory.fetch(address, &value, sizeof(value)); }
+bool fetch64(const VirtualAddressSpace& memory, std::uint64_t address, std::uint64_t& value) { return memory.fetch(address, &value, sizeof(value)); }
 
 bool parityEven(std::uint8_t value) {
     value ^= static_cast<std::uint8_t>(value >> 4);
@@ -78,6 +82,16 @@ bool pop64(const GuestMemory& memory, CpuState& cpu, std::uint64_t& value) {
     if (!memory.read(current, &value, sizeof(value))) return false;
     cpu.registers[RSP] = current + 8;
     return true;
+}
+bool push64(VirtualAddressSpace& memory, CpuState& cpu, std::uint64_t value) {
+    const std::uint64_t next = cpu.registers[RSP] - 8;
+    if (next > cpu.registers[RSP] || !memory.write(next, &value, sizeof(value))) return false;
+    cpu.registers[RSP] = next; return true;
+}
+bool pop64(VirtualAddressSpace& memory, CpuState& cpu, std::uint64_t& value) {
+    const std::uint64_t current = cpu.registers[RSP];
+    if (current > UINT64_MAX - 8 || !memory.read(current, &value, sizeof(value))) return false;
+    cpu.registers[RSP] = current + 8; return true;
 }
 
 } // namespace
@@ -150,20 +164,24 @@ void CpuState::setFlag(std::uint64_t mask, bool enabled) {
     rflags |= 0x2ULL;
 }
 
-X64Interpreter::X64Interpreter(GuestMemory& memory) : memory_(memory) {}
+X64Interpreter::X64Interpreter(GuestMemory& memory) : memory_(&memory) {}
+X64Interpreter::X64Interpreter(VirtualAddressSpace& addressSpace) : addressSpace_(&addressSpace) {}
 
 StepResult X64Interpreter::step(CpuState& state) {
     if (state.halted) return StepResult::Halted;
 
     const std::uint64_t startRip = state.rip;
     std::uint64_t cursor = startRip;
+    auto readCode8 = [&](std::uint64_t a, std::uint8_t& v) { return addressSpace_ ? fetch8(*addressSpace_, a, v) : fetch8(*memory_, a, v); };
+    auto readCode32 = [&](std::uint64_t a, std::uint32_t& v) { return addressSpace_ ? fetch32(*addressSpace_, a, v) : fetch32(*memory_, a, v); };
+    auto readCode64 = [&](std::uint64_t a, std::uint64_t& v) { return addressSpace_ ? fetch64(*addressSpace_, a, v) : fetch64(*memory_, a, v); };
     std::uint8_t opcode = 0;
-    if (!fetch8(memory_, cursor++, opcode)) return StepResult::MemoryFault;
+    if (!readCode8( cursor++, opcode)) return StepResult::MemoryFault;
 
     std::uint8_t rex = 0;
     if (opcode >= 0x40 && opcode <= 0x4F) {
         rex = opcode;
-        if (!fetch8(memory_, cursor++, opcode)) return StepResult::MemoryFault;
+        if (!readCode8( cursor++, opcode)) return StepResult::MemoryFault;
     }
     const bool rexW = (rex & 0x08U) != 0;
     const unsigned bits = rexW ? 64U : 32U;
@@ -175,7 +193,7 @@ StepResult X64Interpreter::step(CpuState& state) {
         return StepResult::Executed;
     };
     auto readModRm = [&](std::uint8_t& modrm, std::size_t& reg, std::size_t& rm) -> bool {
-        if (!fetch8(memory_, cursor++, modrm)) return false;
+        if (!readCode8( cursor++, modrm)) return false;
         if ((modrm >> 6U) != 3U) return false; // Register-only addressing in this milestone.
         reg = static_cast<std::size_t>(((modrm >> 3U) & 7U) | ((rex & 0x04U) ? 8U : 0U));
         rm = static_cast<std::size_t>((modrm & 7U) | ((rex & 0x01U) ? 8U : 0U));
@@ -198,12 +216,12 @@ StepResult X64Interpreter::step(CpuState& state) {
         const std::size_t reg = static_cast<std::size_t>((opcode - 0xB8U) | ((rex & 0x01U) ? 8U : 0U));
         if (rexW) {
             std::uint64_t immediate = 0;
-            if (!fetch64(memory_, cursor, immediate)) return StepResult::MemoryFault;
+            if (!readCode64( cursor, immediate)) return StepResult::MemoryFault;
             cursor += 8;
             state.registers[reg] = immediate;
         } else {
             std::uint32_t immediate = 0;
-            if (!fetch32(memory_, cursor, immediate)) return StepResult::MemoryFault;
+            if (!readCode32( cursor, immediate)) return StepResult::MemoryFault;
             cursor += 4;
             state.registers[reg] = immediate;
         }
@@ -213,13 +231,13 @@ StepResult X64Interpreter::step(CpuState& state) {
     // PUSH/POP general-purpose registers.
     if (opcode >= 0x50 && opcode <= 0x57) {
         const std::size_t reg = static_cast<std::size_t>((opcode - 0x50U) | ((rex & 0x01U) ? 8U : 0U));
-        if (!push64(memory_, state, state.registers[reg])) return StepResult::MemoryFault;
+        if (!(addressSpace_ ? push64(*addressSpace_, state, state.registers[reg]) : push64(*memory_, state, state.registers[reg]))) return StepResult::MemoryFault;
         return finish();
     }
     if (opcode >= 0x58 && opcode <= 0x5F) {
         const std::size_t reg = static_cast<std::size_t>((opcode - 0x58U) | ((rex & 0x01U) ? 8U : 0U));
         std::uint64_t value = 0;
-        if (!pop64(memory_, state, value)) return StepResult::MemoryFault;
+        if (!(addressSpace_ ? pop64(*addressSpace_, state, value) : pop64(*memory_, state, value))) return StepResult::MemoryFault;
         state.registers[reg] = value;
         return finish();
     }
@@ -227,7 +245,7 @@ StepResult X64Interpreter::step(CpuState& state) {
     // PUSH sign-extended immediate.
     if (opcode == 0x68) {
         std::uint32_t raw = 0;
-        if (!fetch32(memory_, cursor, raw)) return StepResult::MemoryFault;
+        if (!readCode32( cursor, raw)) return StepResult::MemoryFault;
         cursor += 4;
         const auto value = static_cast<std::uint64_t>(static_cast<std::int64_t>(static_cast<std::int32_t>(raw)));
         if (!push64(memory_, state, value)) return StepResult::MemoryFault;
@@ -235,7 +253,7 @@ StepResult X64Interpreter::step(CpuState& state) {
     }
     if (opcode == 0x6A) {
         std::uint8_t raw = 0;
-        if (!fetch8(memory_, cursor++, raw)) return StepResult::MemoryFault;
+        if (!readCode8( cursor++, raw)) return StepResult::MemoryFault;
         const auto value = static_cast<std::uint64_t>(static_cast<std::int64_t>(static_cast<std::int8_t>(raw)));
         if (!push64(memory_, state, value)) return StepResult::MemoryFault;
         return finish();
@@ -251,7 +269,7 @@ StepResult X64Interpreter::step(CpuState& state) {
     }
     if (opcode == 0xE8) {
         std::uint32_t raw = 0;
-        if (!fetch32(memory_, cursor, raw)) return StepResult::MemoryFault;
+        if (!readCode32( cursor, raw)) return StepResult::MemoryFault;
         cursor += 4;
         const std::uint64_t returnAddress = cursor;
         if (!push64(memory_, state, returnAddress)) return StepResult::MemoryFault;
@@ -264,7 +282,7 @@ StepResult X64Interpreter::step(CpuState& state) {
     // Short relative jumps: JMP, JE/JZ, JNE/JNZ.
     if (opcode == 0xEB || opcode == 0x74 || opcode == 0x75) {
         std::uint8_t raw = 0;
-        if (!fetch8(memory_, cursor++, raw)) return StepResult::MemoryFault;
+        if (!readCode8( cursor++, raw)) return StepResult::MemoryFault;
         const bool take = opcode == 0xEB || (opcode == 0x74 && state.flag(FlagZero)) ||
                           (opcode == 0x75 && !state.flag(FlagZero));
         if (take) {
