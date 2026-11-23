@@ -371,6 +371,7 @@ ElfLoadResult Elf64Loader::loadStaticExecutable(VirtualAddressSpace& as,
             result.message = "ELF dynamic table size is invalid"; return result;
         }
         std::uint64_t relaPointer = 0, relaSize = 0, relaEntrySize = sizeof(Elf64_Rela);
+        std::uint64_t relSize = 0, pltRelSize = 0;
         std::uint64_t symtabPointer = 0, symEntrySize = sizeof(Elf64_Sym);
         bool hasNeeded = false;
         for (std::uint64_t offset = 0; offset < dynamicSize; offset += sizeof(Elf64_Dyn)) {
@@ -386,16 +387,16 @@ ElfLoadResult Elf64Loader::loadStaticExecutable(VirtualAddressSpace& as,
                 case DT_RELAENT: relaEntrySize = dyn.d_un.d_val; break;
                 case DT_SYMTAB: symtabPointer = dyn.d_un.d_ptr; break;
                 case DT_SYMENT: symEntrySize = dyn.d_un.d_val; break;
+                case DT_RELSZ: relSize = dyn.d_un.d_val; break;
+                case DT_PLTRELSZ: pltRelSize = dyn.d_un.d_val; break;
                 case DT_REL:
-                case DT_RELSZ:
                 case DT_JMPREL:
-                case DT_PLTRELSZ:
-                    if (dyn.d_un.d_val != 0) {
-                        result.message = "REL/PLT relocation tables are not supported; use RELA"; return result;
-                    }
                     break;
                 default: break;
             }
+        }
+        if (relSize || pltRelSize) {
+            result.message = "REL/PLT relocation tables are not supported; use RELA"; return result;
         }
         if (hasNeeded) {
             result.message = "ELF requires DT_NEEDED shared libraries; external dynamic linking is not implemented"; return result;
