@@ -405,7 +405,7 @@ SelfTestResult runSelfTest() {
     const bool registersAndStack = cpu.halted && cpu.registers[RAX] == 0 &&
         cpu.registers[RBX] == 12 && cpu.registers[RSP] == kDefaultStackTop &&
         cpu.instructionsExecuted == 9;
-    const bool flagsCorrect = !cpu.flag(FlagZero) && cpu.flag(FlagSign) == false;
+    const bool flagsCorrect = !cpu.flag(FlagZero) && cpu.flag(FlagSign);
     result.rax = cpu.registers[RAX];
     result.instructions = cpu.instructionsExecuted;
     result.passed = registersAndStack && flagsCorrect;
