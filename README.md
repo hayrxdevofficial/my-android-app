@@ -21,6 +21,7 @@ Experimental Android frontend and native execution-core foundation. This reposit
 - ELF segment file copying, zero-filled BSS, entry-point validation and initial 8 MiB user stack
 - CPU interpreter can fetch instructions and use PUSH/POP/CALL/RET through the protected virtual address space
 - Built-in virtual-memory and synthetic ELF loader regression tests
+- Android file picker can load a user-selected static ELF64 file into the PSHere address space; loading does not start execution
 - ELF scope is intentionally limited: ET_DYN/PIE, PT_INTERP, dynamic linking, relocations, shared libraries and PS4 SELF containers are not supported
 - Current addressing scope: register-only ModRM; general memory operands, SIMD and full x86-64 decoding are not implemented
 - Built-in CPU smoke test: executes `MOV RAX, 42; NOP; HLT` and checks the resulting state
