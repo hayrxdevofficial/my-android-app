@@ -78,8 +78,8 @@ Java_com_hayrx_ps4emu_MainActivity_nativeLoadElf(JNIEnv* env, jobject, jbyteArra
 
     {
         std::lock_guard<std::mutex> lock(gElfRuntimeMutex);
-        gLoadedGuestMemory = std::move(memory);
         gLoadedAddressSpace = std::move(addressSpace);
+        gLoadedGuestMemory = std::move(memory);
     }
     output << "ELF loaded into PSHere virtual memory"
            << "\nEntry point: 0x" << std::hex << loaded.entryPoint
