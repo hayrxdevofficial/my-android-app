@@ -212,7 +212,7 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
 
     private fun runCoreSelfTest() {
         coreStatus.text = try {
-            nativeCoreInfo() + "\\n\\n" + nativeRunSelfTest()
+            nativeCoreInfo() + "\n\n" + nativeRunSelfTest()
         } catch (error: UnsatisfiedLinkError) {
             "PSHere native library failed to load: ${error.message}"
         }
