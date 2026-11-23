@@ -10,6 +10,8 @@ import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.net.Uri
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.os.Environment
 import android.provider.Settings
 import android.view.Gravity
@@ -19,9 +21,11 @@ import android.view.MotionEvent
 import android.view.View
 import android.widget.Button
 import android.widget.LinearLayout
+import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
+import java.io.File
 
 class MainActivity : Activity(), InputManager.InputDeviceListener {
     private lateinit var status: TextView
@@ -30,6 +34,10 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
     private lateinit var gameFile: TextView
     private lateinit var profile: TextView
     private lateinit var coreStatus: TextView
+    private lateinit var firmwareProgressText: TextView
+    private lateinit var firmwareProgressBar: ProgressBar
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private var activeFirmwareDownloadId: Long? = null
     private lateinit var inputManager: InputManager
     private lateinit var connectivityManager: ConnectivityManager
 
@@ -121,26 +129,16 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
         ))
         content.addView(action("CHECK WI-FI / INTERNET STATUS") { refreshNetworkStatus() })
 
-        content.addView(section("OFFICIAL SONY FIRMWARE"))
-        content.addView(label(
-            "Choose a Sony PUP package to download. The update package is about 503 MB; " +
-                "the reinstall package is about 1.08 GB at the time these links were checked. " +
-                "Downloads are saved in the Android Downloads folder.",
-            12, 0xFF9DB3D5.toInt()
-        ))
-        content.addView(action("DOWNLOAD OFFICIAL PS4 UPDATE (.PUP)") {
-            downloadFirmware(SONY_UPDATE_PUP, "PS4UPDATE.PUP")
-        })
-        content.addView(action("DOWNLOAD OFFICIAL REINSTALL PUP") {
-            downloadFirmware(SONY_REINSTALL_PUP, "PS4_REINSTALL.PUP")
-        })
+        content.addView(section("PS4 FIRMWARE • DOWNLOAD & IMPORT"))
+        content.addView(label("Download an official Sony PUP package. PSHere shows the real download percentage, then copies the completed package into its private firmware folder.", 12, 0xFF9DB3D5.toInt()))
+        content.addView(action("DOWNLOAD + IMPORT PS4 UPDATE (.PUP)") { downloadFirmware(SONY_UPDATE_PUP, "PS4UPDATE.PUP") })
+        content.addView(action("DOWNLOAD + IMPORT REINSTALL PUP") { downloadFirmware(SONY_REINSTALL_PUP, "PS4_REINSTALL.PUP") })
+        firmwareProgressBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply { max = 100; progress = 0 }
+        content.addView(firmwareProgressBar)
+        firmwareProgressText = label("Firmware: not downloaded", 13, 0xFF9DB3D5.toInt())
+        content.addView(firmwareProgressText)
         content.addView(action("OPEN SONY FIRMWARE PAGE") { openSonyPage() })
-        content.addView(label(
-            "Important: Sony distributes PUP update/reinstallation packages, not an official PS4 ISO. " +
-                "A PUP is not a bootable PS4 image and cannot start the emulator by itself.",
-            12, 0xFFFFC66D.toInt()
-        ))
-
+        content.addView(label("Important: this imports the PUP file into PSHere storage; it does NOT install or boot the PS4 operating system. PUP is not a bootable ISO. Firmware parsing and PS4 system compatibility are not implemented.", 12, 0xFFFFC66D.toInt()))
         status = label("Network: checking", 14, 0xFFB8C7E0.toInt())
         content.addView(status)
         content.addView(action("REFRESH STATUS & CONTROLLERS") { refreshAll() })
@@ -237,23 +235,68 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
 
     private fun downloadFirmware(url: String, fileName: String) {
         try {
+            activeFirmwareDownloadId?.let { old -> try { (getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager).remove(old) } catch (_: Exception) { } }
+            firmwareProgressBar.progress = 0
+            firmwareProgressBar.isIndeterminate = true
+            firmwareProgressText.text = "Connecting to Sony…"
             val request = DownloadManager.Request(Uri.parse(url))
-                .setTitle(fileName)
-                .setDescription("Official PlayStation 4 system software from Sony")
+                .setTitle(fileName).setDescription("Official PlayStation 4 system software from Sony")
                 .setMimeType("application/octet-stream")
                 .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-                .setAllowedOverMetered(true)
-                .setAllowedOverRoaming(false)
+                .setAllowedOverMetered(true).setAllowedOverRoaming(false)
                 .setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, fileName)
-            val manager = getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
-            val id = manager.enqueue(request)
-            Toast.makeText(this, "Download queued. ID: $id", Toast.LENGTH_LONG).show()
-            gameFile.text = "Download started: $fileName\nCheck Android Downloads/notifications. This package is not executable here."
+            val id = (getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager).enqueue(request)
+            activeFirmwareDownloadId = id
+            firmwareProgressText.text = "Download queued: " + fileName
+            pollFirmwareDownload(id, fileName)
         } catch (e: Exception) {
-            Toast.makeText(this, "Could not start download: ${e.message}", Toast.LENGTH_LONG).show()
+            firmwareProgressBar.isIndeterminate = false
+            firmwareProgressText.text = "Download error: " + e.message
         }
     }
 
+    private fun pollFirmwareDownload(id: Long, fileName: String) {
+        val cursor = (getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager).query(DownloadManager.Query().setFilterById(id))
+        if (cursor == null) { firmwareProgressText.text = "Cannot read download status."; return }
+        var again = false
+        try {
+            if (!cursor.moveToFirst()) { firmwareProgressText.text = "Download task not found."; return }
+            val state = cursor.getInt(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS))
+            val done = cursor.getLong(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR))
+            val total = cursor.getLong(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_TOTAL_SIZE_BYTES))
+            val pct = if (total > 0L) ((done * 100L) / total).toInt().coerceIn(0, 100) else -1
+            firmwareProgressBar.isIndeterminate = total <= 0L && state == DownloadManager.STATUS_RUNNING
+            if (pct >= 0) firmwareProgressBar.progress = pct
+            when (state) {
+                DownloadManager.STATUS_PENDING -> { firmwareProgressText.text = "Waiting for network…"; again = true }
+                DownloadManager.STATUS_RUNNING -> { firmwareProgressText.text = if (pct >= 0) "Downloading " + fileName + ": " + pct + "% (" + (done / 1048576) + " / " + (total / 1048576) + " MB)" else "Downloading " + fileName; again = true }
+                DownloadManager.STATUS_PAUSED -> { firmwareProgressText.text = "Download paused; waiting for connection…"; again = true }
+                DownloadManager.STATUS_SUCCESSFUL -> { firmwareProgressBar.isIndeterminate = true; firmwareProgressText.text = "Download complete. Importing…"; importFirmwarePackage(id, fileName) }
+                DownloadManager.STATUS_FAILED -> { val reason = cursor.getInt(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_REASON)); firmwareProgressBar.isIndeterminate = false; firmwareProgressText.text = "Download failed (code " + reason + "). Check connection or Sony support page."; activeFirmwareDownloadId = null }
+                else -> { firmwareProgressText.text = "Unknown download state."; again = true }
+            }
+        } catch (e: Exception) { firmwareProgressBar.isIndeterminate = false; firmwareProgressText.text = "Status error: " + e.message }
+        finally { cursor.close() }
+        if (again && activeFirmwareDownloadId == id) mainHandler.postDelayed({ pollFirmwareDownload(id, fileName) }, 500L)
+    }
+
+    private fun importFirmwarePackage(id: Long, fileName: String) {
+        Thread {
+            try {
+                val dir = File(filesDir, "firmware")
+                if (!dir.exists() && !dir.mkdirs()) throw IllegalStateException("Cannot create firmware folder")
+                val target = File(dir, fileName)
+                var bytes = 0L
+                (getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager).openDownloadedFile(id).use { input ->
+                    target.outputStream().buffered().use { output ->
+                        val buffer = ByteArray(65536)
+                        while (true) { val count = input.read(buffer); if (count < 0) break; output.write(buffer, 0, count); bytes += count }
+                    }
+                }
+                runOnUiThread { firmwareProgressBar.isIndeterminate = false; firmwareProgressBar.progress = 100; firmwareProgressText.text = "100% • Imported (" + (bytes / 1048576) + " MB). Not bootable yet."; gameFile.text = "PUP stored in PSHere private firmware folder: " + target.name; activeFirmwareDownloadId = null }
+            } catch (e: Exception) { runOnUiThread { firmwareProgressBar.isIndeterminate = false; firmwareProgressText.text = "Import failed: " + e.message; activeFirmwareDownloadId = null } }
+        }.start()
+    }
     private fun openSonyPage() {
         try {
             startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(SONY_SUPPORT)))
