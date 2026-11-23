@@ -335,15 +335,32 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
         Thread {
             val result = try {
                 val bytes = contentResolver.openInputStream(uri)?.use { input ->
+                    val header = ByteArray(4)
+                    var headerBytes = 0
+                    while (headerBytes < header.size) {
+                        val count = input.read(header, headerBytes, header.size - headerBytes)
+                        if (count < 0) break
+                        headerBytes += count
+                    }
+                    if (headerBytes != 4 || header[0] != 0x7F.toByte() ||
+                        header[1] != 0x45.toByte() || header[2] != 0x4C.toByte() ||
+                        header[3] != 0x46.toByte()) {
+                        throw IllegalArgumentException(
+                            "This is not an ELF executable. PS4UPDATE.PUP is firmware: use the PS4 FIRMWARE download/import section, not LOAD X86-64 ELF64."
+                        )
+                    }
                     val output = ByteArrayOutputStream()
+                    output.write(header)
                     val buffer = ByteArray(8192)
-                    var total = 0
+                    var total = headerBytes
                     while (true) {
                         val count = input.read(buffer)
                         if (count < 0) break
                         total += count
                         if (total > 128 * 1024 * 1024) {
-                            throw IllegalArgumentException("ELF file exceeds the 128 MiB loader limit")
+                            throw IllegalArgumentException(
+                                "ELF file exceeds the current 128 MiB safety limit. Large PS4 firmware/game packages are not ELF executables."
+                            )
                         }
                         output.write(buffer, 0, count)
                     }
