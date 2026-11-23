@@ -1,82 +1,45 @@
 # PSHere — Android PS4 emulation research
 
-Experimental Android frontend and native execution-core foundation. This repository is not yet a working PS4 emulator and does not currently boot commercial games.
+PSHere is an experimental Android frontend and native x86-64 execution-core prototype. It is **not a working PS4 emulator** and does not boot commercial PS4 games.
 
-## Version 0.7.0 — x86-64 addressing, CR3 page tables and ELF execution
+## Version 0.7.0
 
-- Kotlin Android application
-- C++17 native library built with Android NDK and CMake
-- JNI bridge from the Android UI to the PSHere native core
-- Sparse, page-based guest memory with a configurable 6 GiB ceiling (pages are committed only when written)
-- x86-64 general-purpose register file: RAX–R15, RSP, RBP, RSI, RDI, RIP
-- RFLAGS support for carry, parity, auxiliary, zero, sign and overflow flags
-- 64-bit stack with PUSH, POP, CALL and RET
-- Register and basic memory-operand MOV, ADD, SUB, XOR, CMP and TEST operations using ModRM/SIB effective addresses\n- Base, index, scale and displacement decoding, including `[RAX]`, `[RBX+8]` and `[RSP-16]`
-- Control flow: short JMP, JE/JZ and JNE/JNZ
-- NOP and HLT
-- Virtual address space with 4 KiB page mappings backed by sparse guest physical storage\n- Four-level software x86-64 page-table walk (PML4 → PDPT → PD → PT) with a CR3 root register value and per-page permission checks
-- Per-page read, write and execute permissions; protected instruction fetch and stack access
-- Page map, unmap and permission-change operations with user-address range checks
-- Little-endian x86-64 ELF64 ET_EXEC and ET_DYN loader for PT_LOAD segments\n- ET_DYN load bias and a limited RELA relocator for relative and locally-defined symbol relocations; external shared libraries and PT_INTERP remain unsupported
-- ELF segment file copying, zero-filled BSS, entry-point validation and initial 8 MiB user stack
-- CPU interpreter can fetch instructions and use PUSH/POP/CALL/RET through the protected virtual address space
-- Built-in virtual-memory and synthetic ELF loader regression tests
-- Android file picker can load an ELF64 file and a separate button starts it with a bounded instruction budget; unsupported opcodes or memory faults stop execution
-- ELF scope is intentionally limited: ET_DYN/PIE, PT_INTERP, dynamic linking, relocations, shared libraries and PS4 SELF containers are not supported
-- Current addressing scope: basic ModRM/SIB memory operands; SIMD, many x86-64 opcodes, segment bases, full exception semantics and complete decoding remain unsupported
-- Built-in CPU smoke test: executes `MOV RAX, 42; NOP; HLT` and checks the resulting state
-- Guest-memory tests: cross-page reads/writes, zero-filled unmapped reads, and enforcement of a small test budget
-- Android build targets: `arm64-v8a` and `x86_64`
-- Keyboard and USB/Bluetooth Android gamepad detection
-- Android default-network monitoring (Wi-Fi, mobile data, Ethernet)
-- Firmware downloads use Android DownloadManager and the tablet's active network route
-- Local file selection through Android Storage Access Framework
-- PS4 profile target: 70 GB virtual storage and 6 GB guest-memory budget
+- Android application with a C++17 NDK native library and JNI bridge.
+- Android launcher label: `Hayrulla004004_Dev.ps4emulator`.
+- Sparse guest memory with a configurable 6 GiB budget; memory is committed on demand.
+- x86-64 general-purpose registers RAX–R15, RIP and selected RFLAGS bits.
+- Basic instruction subset: MOV, ADD, SUB, XOR, CMP, TEST, PUSH, POP, CALL, RET, short JMP/Jcc, NOP and HLT.
+- ModRM/SIB effective-address decoding for common base, index, scale and displacement forms, including `[RAX]`, `[RBX+8]` and `[RSP-16]`.
+- 4 KiB virtual pages backed by sparse guest storage.
+- Four-level software x86-64 page-table walk (PML4 → PDPT → PD → PT), CR3 root value and page permission checks.
+- Per-page read/write/execute protection and protected instruction fetch.
+- ELF64 `ET_EXEC` and `ET_DYN` PT_LOAD loading, BSS zero-fill, entry-point validation and an initial 8 MiB stack.
+- ET_DYN fixed load bias and a limited RELA relocator for `R_X86_64_RELATIVE` and selected locally-defined symbol relocations.
+- Android file picker and bounded execution of a loaded ELF entry point (500,000 instructions per UI run).
+- Self-tests for CPU arithmetic/stack, ModRM/SIB memory addressing, virtual memory, page-table translation and synthetic ELF loading.
 
-## PSHere native core
+## Important limitations
 
-The native core is loaded by the Android app as `libpshere.so`. The UI exposes core diagnostics and a self-test button. The current interpreter is deliberately small. It validates general-purpose registers, selected RFLAGS arithmetic bits, a 64-bit stack, basic arithmetic/logical operations, short conditional branches, and protected instruction fetch through the new virtual address space. It remains a prototype instruction subset, not a complete x86-64 CPU.
+The page tables are a software model, not a complete hardware MMU. TLBs, PCID, privilege transitions, full page-fault semantics, huge pages, copy-on-write and memory-mapped I/O are not implemented.
 
-The memory manager uses 4 KiB pages and allocates them on demand. The 6 GiB value is a guest-memory budget, not a request to reserve 6 GiB from Android at startup. Actual device memory pressure and Android process limits still apply.
+The ELF loader is not a complete dynamic linker. It rejects `PT_INTERP` and external `DT_NEEDED` libraries; REL/PLT relocation tables, TLS, auxiliary vectors and a full process startup ABI are not supported. The supported local RELA subset does not make arbitrary Linux binaries runnable.
 
-### Virtual memory and protection
+The x86-64 interpreter remains a small subset. SIMD, many integer instructions, complete flags/exceptions, segment bases and full instruction decoding are missing. ELF execution stops on HLT, unsupported instructions, memory/permission faults or the instruction budget.
 
-The virtual memory layer uses 4 KiB pages and translates guest virtual pages to sparse backing pages. Each mapped page has read, write and execute permissions. Instruction fetch requires execute permission; normal reads require read permission; writes and stack updates require write permission. Unmapped accesses and permission violations fail rather than silently reading or modifying memory.
+PS4 games still require substantially more work: PS4 SELF handling, kernel and system-library compatibility, syscalls, threads, GPU/Vulkan command translation, shader translation, audio, filesystem, timers and a much broader CPU implementation. This project does not decrypt Sony firmware or launch PS4 titles.
 
-The current address-space model is a first milestone, not a complete hardware MMU: it does not yet implement x86-64 four-level page tables, CR3, TLBs, canonical-address exceptions, privilege rings, copy-on-write, guard-page growth or memory-mapped I/O. The interpreter currently fetches instructions and performs stack operations through this layer; general ModRM memory operands are still pending.
+## Memory profile
 
-### ELF64 loader
+The 6 GiB value is a guest-memory ceiling, not memory reserved from Android at startup. The 70 GB storage value is still a target profile; a persistent virtual disk backend is not implemented.
 
-The loader accepts static, little-endian x86-64 ELF64 `ET_EXEC` files. It validates the ELF header and program-header bounds, maps `PT_LOAD` segments, copies file bytes, zero-fills the remainder of each segment (BSS), applies per-page R/W/X permissions, validates that the entry point is executable, and creates an initial 8 MiB read/write stack.
+## Networking and input
 
-It deliberately rejects dynamic interpreters and does not yet support `ET_DYN`/PIE relocation, dynamic linking, shared libraries, TLS, auxiliary vectors, process startup ABI, or PS4 `SELF` containers. A successful ELF self-test only proves the synthetic test executable can be loaded and its NOP/HLT entry code fetched and executed; it does not imply PS4 games can boot.
-
-## Tablet Wi-Fi networking
-
-The app observes Android's default network. When the tablet is connected to Wi-Fi, Android routes app downloads and network requests over that Wi-Fi connection automatically. This is not yet a PS4 virtual network adapter: guest sockets, PSN protocols, multiplayer and NAT behavior are not implemented.
-
-## Firmware
-
-Sony supplies PS4 system software as PUP update/reinstallation packages, not a bootable PS4 ISO. A PUP is intended for updating or reinstalling software on a physical PS4; it is not a ready-to-boot emulator image. Use the official Sony support page linked in the app if a direct package URL changes.
-
-Official source: https://www.playstation.com/en-gb/support/hardware/ps4/system-software/
-
-## Resource profile
-
-The 70 GB storage value remains a target only: a virtual disk backend has not yet been implemented. The 6 GB value is the guest-memory budget for the native memory manager; pages are allocated on demand, not reserved in full.
-
-## What is still required before games can boot
-
-1. A complete and tested x86-64 CPU implementation, including SIMD and correct flags/exceptions.
-2. PS4 executable/SELF handling and a lawful firmware/system-module loading path.
-3. PS4 kernel and system-library compatibility (syscalls, threads, synchronization, filesystems).
-4. GPU command translation to Vulkan, plus shader translation and synchronization.
-5. Audio, input mapping, timers, networking and virtual storage.
-6. Compatibility tests and performance profiling on each Android GPU/SoC family.
-
-The current Android ARM64 host also needs a fast x86-64 guest translation strategy. A small interpreter smoke test is not evidence that PS4 games can run.
+The app detects Android keyboard/gamepad devices and observes Android's active network. Android routes app downloads over the active Wi-Fi/mobile/Ethernet connection. This is not a PS4 guest network adapter, PSN implementation or multiplayer stack.
 
 ## Build
 
-Open in Android Studio with JDK 17 and Android SDK 35, with Android NDK 27.2.12479018 and CMake 3.22.1 installed. GitHub Actions builds a debug APK for `arm64-v8a` and `x86_64` and uploads the `pshere-android-debug-apk` artifact.
-\n\n## Android app identity\n\nThe launcher label is `Hayrulla004004_Dev.ps4emulator`. This is the local Android app name; it does not set a Google Play developer account or store listing identity.\n
+Open the project in Android Studio with JDK 17, Android SDK 35, Android NDK and CMake 3.22.1. GitHub Actions builds debug APKs for `arm64-v8a` and `x86_64`.
+
+## Identity note
+
+`Hayrulla004004_Dev.ps4emulator` is the Android launcher label. It does not change the developer account name or store listing identity in Google Play.
