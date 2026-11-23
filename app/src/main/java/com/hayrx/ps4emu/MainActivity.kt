@@ -28,6 +28,7 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
     private lateinit var inputLog: TextView
     private lateinit var gameFile: TextView
     private lateinit var profile: TextView
+    private lateinit var coreStatus: TextView
     private lateinit var inputManager: InputManager
     private lateinit var connectivityManager: ConnectivityManager
 
@@ -59,6 +60,8 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
         private const val KEY_STORAGE_GB = "storage_gb"
         private const val KEY_RAM_GB = "ram_gb"
         private const val PICKER_CODE = 4102
+
+        init { System.loadLibrary("pshere") }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -86,7 +89,7 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
         page.addView(scroll)
 
         content.addView(label("PS4 EMULATOR", 28, 0xFFFFFFFF.toInt()))
-        content.addView(label("ANDROID FOUNDATION • VERSION 0.2.0", 11, 0xFF8EA4C8.toInt()))
+        content.addView(label("PSHERE NATIVE CORE • VERSION 0.4.0", 11, 0xFF8EA4C8.toInt()))
         content.addView(label("Compatibility prototype. PS4 games do not run yet.", 14, 0xFFFFC66D.toInt()))
 
         content.addView(section("EMULATOR PROFILE"))
@@ -98,6 +101,12 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
             12, 0xFF9DB3D5.toInt()
         ))
         refreshProfile()
+
+        content.addView(section("PSHERE NATIVE CPU CORE"))
+        coreStatus = label("Loading native core...", 12, 0xFF9DB3D5.toInt())
+        content.addView(coreStatus)
+        content.addView(action("RUN X86-64 CORE SELF-TEST") { runCoreSelfTest() })
+        refreshCoreStatus()
 
         content.addView(section("TABLET NETWORK BRIDGE"))
         content.addView(label(
@@ -188,6 +197,25 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
         text = value
         isAllCaps = false
         setOnClickListener { run() }
+    }
+
+    private external fun nativeCoreInfo(): String
+    private external fun nativeRunSelfTest(): String
+
+    private fun refreshCoreStatus() {
+        coreStatus.text = try {
+            nativeCoreInfo()
+        } catch (error: UnsatisfiedLinkError) {
+            "PSHere native library failed to load: ${error.message}"
+        }
+    }
+
+    private fun runCoreSelfTest() {
+        coreStatus.text = try {
+            nativeCoreInfo() + "\\n\\n" + nativeRunSelfTest()
+        } catch (error: UnsatisfiedLinkError) {
+            "PSHere native library failed to load: ${error.message}"
+        }
     }
 
     private fun refreshProfile() {
