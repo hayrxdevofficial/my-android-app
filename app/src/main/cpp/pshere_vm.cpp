@@ -32,6 +32,138 @@ bool pageUp(std::uint64_t value, std::uint64_t& result) {
 }
 }
 
+
+namespace {
+constexpr std::uint64_t kPtePresent = 1ULL;
+constexpr std::uint64_t kPteWrite = 1ULL << 1;
+constexpr std::uint64_t kPteUser = 1ULL << 2;
+constexpr std::uint64_t kPteNoExecute = 1ULL << 63;
+constexpr std::uint64_t kPteAddressMask = 0x000FFFFFFFFFF000ULL;
+constexpr std::uint64_t kCanonicalUserLimit = 0x0000800000000000ULL;
+constexpr std::uint64_t kTableFlags = kPtePresent | kPteWrite | kPteUser;
+}
+
+X64PageTables::X64PageTables() : cr3_(allocateTable()) {}
+std::uint64_t X64PageTables::cr3() const { return cr3_; }
+std::uint64_t X64PageTables::allocateTable() {
+    const std::uint64_t address = nextTablePhysical_;
+    nextTablePhysical_ += kPageSize;
+    tables_.emplace(address, Table{});
+    return address;
+}
+X64PageTables::Table* X64PageTables::tableAt(std::uint64_t address) {
+    const auto it = tables_.find(address & kPteAddressMask);
+    return it == tables_.end() ? nullptr : &it->second;
+}
+const X64PageTables::Table* X64PageTables::tableAt(std::uint64_t address) const {
+    const auto it = tables_.find(address & kPteAddressMask);
+    return it == tables_.end() ? nullptr : &it->second;
+}
+bool X64PageTables::map(std::uint64_t va, std::uint64_t pa, std::uint8_t permissions, bool user) {
+    if (va >= kCanonicalUserLimit || (va & (kPageSize - 1)) ||
+        (pa & (kPageSize - 1)) || (pa & ~kPteAddressMask) ||
+        permissions == 0 || (permissions & ~7U)) return false;
+    const unsigned indexes[4] = {
+        static_cast<unsigned>((va >> 39) & 0x1FF),
+        static_cast<unsigned>((va >> 30) & 0x1FF),
+        static_cast<unsigned>((va >> 21) & 0x1FF),
+        static_cast<unsigned>((va >> 12) & 0x1FF)
+    };
+    std::uint64_t tablePhysical = cr3_;
+    for (int level = 0; level < 3; ++level) {
+        Table* table = tableAt(tablePhysical);
+        if (!table) return false;
+        std::uint64_t& entry = (*table)[indexes[level]];
+        if ((entry & kPtePresent) == 0) entry = allocateTable() | kTableFlags;
+        tablePhysical = entry & kPteAddressMask;
+    }
+    Table* leafTable = tableAt(tablePhysical);
+    if (!leafTable) return false;
+    std::uint64_t& leaf = (*leafTable)[indexes[3]];
+    if (leaf & kPtePresent) return false;
+    leaf = pa | kPtePresent;
+    if (permissions & MemWrite) leaf |= kPteWrite;
+    if (user) leaf |= kPteUser;
+    if ((permissions & MemExecute) == 0) leaf |= kPteNoExecute;
+    return true;
+}
+bool X64PageTables::unmap(std::uint64_t va) {
+    if (va >= kCanonicalUserLimit || (va & (kPageSize - 1))) return false;
+    const unsigned indexes[4] = {
+        static_cast<unsigned>((va >> 39) & 0x1FF),
+        static_cast<unsigned>((va >> 30) & 0x1FF),
+        static_cast<unsigned>((va >> 21) & 0x1FF),
+        static_cast<unsigned>((va >> 12) & 0x1FF)
+    };
+    std::uint64_t physical = cr3_;
+    for (int level = 0; level < 3; ++level) {
+        const Table* table = tableAt(physical);
+        if (!table || (((*table)[indexes[level]] & kPtePresent) == 0)) return false;
+        physical = (*table)[indexes[level]] & kPteAddressMask;
+    }
+    Table* leafTable = tableAt(physical);
+    if (!leafTable || (((*leafTable)[indexes[3]] & kPtePresent) == 0)) return false;
+    (*leafTable)[indexes[3]] = 0;
+    return true;
+}
+bool X64PageTables::protect(std::uint64_t va, std::uint8_t permissions, bool user) {
+    if (permissions == 0 || (permissions & ~7U) || va >= kCanonicalUserLimit ||
+        (va & (kPageSize - 1))) return false;
+    const unsigned indexes[4] = {
+        static_cast<unsigned>((va >> 39) & 0x1FF),
+        static_cast<unsigned>((va >> 30) & 0x1FF),
+        static_cast<unsigned>((va >> 21) & 0x1FF),
+        static_cast<unsigned>((va >> 12) & 0x1FF)
+    };
+    std::uint64_t physical = cr3_;
+    for (int level = 0; level < 3; ++level) {
+        const Table* table = tableAt(physical);
+        if (!table || (((*table)[indexes[level]] & kPtePresent) == 0)) return false;
+        physical = (*table)[indexes[level]] & kPteAddressMask;
+    }
+    Table* leafTable = tableAt(physical);
+    if (!leafTable) return false;
+    std::uint64_t& leaf = (*leafTable)[indexes[3]];
+    if ((leaf & kPtePresent) == 0) return false;
+    leaf &= ~(kPteWrite | kPteUser | kPteNoExecute);
+    if (permissions & MemWrite) leaf |= kPteWrite;
+    if (user) leaf |= kPteUser;
+    if ((permissions & MemExecute) == 0) leaf |= kPteNoExecute;
+    return true;
+}
+bool X64PageTables::translate(std::uint64_t va, std::uint8_t access,
+                              std::uint64_t& pa, bool user) const {
+    if (va >= kCanonicalUserLimit || (access & ~7U) || access == 0) return false;
+    const unsigned indexes[4] = {
+        static_cast<unsigned>((va >> 39) & 0x1FF),
+        static_cast<unsigned>((va >> 30) & 0x1FF),
+        static_cast<unsigned>((va >> 21) & 0x1FF),
+        static_cast<unsigned>((va >> 12) & 0x1FF)
+    };
+    std::uint64_t physical = cr3_;
+    bool writable = true;
+    bool userAllowed = true;
+    bool executable = true;
+    for (int level = 0; level < 4; ++level) {
+        const Table* table = tableAt(physical);
+        if (!table) return false;
+        const std::uint64_t entry = (*table)[indexes[level]];
+        if ((entry & kPtePresent) == 0) return false;
+        writable = writable && ((entry & kPteWrite) != 0);
+        userAllowed = userAllowed && ((entry & kPteUser) != 0);
+        executable = executable && ((entry & kPteNoExecute) == 0);
+        if (level == 3) {
+            if ((access & MemWrite) && !writable) return false;
+            if ((access & MemExecute) && !executable) return false;
+            if (user && !userAllowed) return false;
+            pa = (entry & kPteAddressMask) | (va & (kPageSize - 1));
+            return true;
+        }
+        physical = entry & kPteAddressMask;
+    }
+    return false;
+}
+
 VirtualAddressSpace::VirtualAddressSpace(GuestMemory& backing) : backing_(backing) {}
 
 bool VirtualAddressSpace::map(std::uint64_t address, std::uint64_t size, std::uint8_t permissions) {
@@ -47,10 +179,11 @@ bool VirtualAddressSpace::map(std::uint64_t address, std::uint64_t size, std::ui
     inserted.reserve(static_cast<std::size_t>(count));
     for (std::uint64_t offset = 0; offset < size; offset += kPageSize) {
         const std::uint64_t backingAddress = nextBackingPage_ * kPageSize;
-        if (!backing_.write(backingAddress, &zero, 1)) {
+        if (!backing_.write(backingAddress, &zero, 1) ||
+            !pageTables_.map(address + offset, backingAddress, permissions)) {
             for (const auto page : inserted) {
                 const auto it = pages_.find(page);
-                if (it != pages_.end()) { backing_.releasePage(it->second.backingAddress); pages_.erase(it); }
+                if (it != pages_.end()) { pageTables_.unmap(page * kPageSize); backing_.releasePage(it->second.backingAddress); pages_.erase(it); }
             }
             return false;
         }
@@ -69,6 +202,7 @@ bool VirtualAddressSpace::unmap(std::uint64_t address, std::uint64_t size) {
     for (std::uint64_t offset = 0; offset < size; offset += kPageSize) {
         const auto it = pages_.find((address + offset) / kPageSize);
         if (it != pages_.end()) {
+            pageTables_.unmap(address + offset);
             backing_.releasePage(it->second.backingAddress);
             pages_.erase(it);
         }
@@ -81,6 +215,7 @@ bool VirtualAddressSpace::protect(std::uint64_t address, std::uint64_t size, std
     for (std::uint64_t offset = 0; offset < size; offset += kPageSize)
         if (pages_.find((address + offset) / kPageSize) == pages_.end()) return false;
     for (std::uint64_t offset = 0; offset < size; offset += kPageSize)
+        if (!pageTables_.protect(address + offset, permissions)) return false;
         pages_[(address + offset) / kPageSize].permissions = permissions;
     return true;
 }
@@ -98,7 +233,10 @@ bool VirtualAddressSpace::transfer(std::uint64_t address, void* buffer, std::siz
         if (pageIt == pages_.end() || (pageIt->second.permissions & requiredPermission) == 0) return false;
         const std::size_t pageOffset = static_cast<std::size_t>(cursor % kPageSize);
         const std::size_t amount = std::min(remaining, static_cast<std::size_t>(kPageSize) - pageOffset);
-        const std::uint64_t backingAddress = pageIt->second.backingAddress + pageOffset;
+        std::uint64_t translated = 0;
+        if (!pageTables_.translate(cursor, requiredPermission, translated) ||
+            translated != pageIt->second.backingAddress + pageOffset) return false;
+        const std::uint64_t backingAddress = translated;
         const bool ok = writeAccess
             ? backing_.write(backingAddress, bytes, amount)
             : backing_.read(backingAddress, bytes, amount);
@@ -128,6 +266,7 @@ bool VirtualAddressSpace::hasPermission(std::uint64_t address, std::uint8_t perm
     return it != pages_.end() && (it->second.permissions & permission) == permission;
 }
 std::size_t VirtualAddressSpace::mappedPageCount() const { return pages_.size(); }
+std::uint64_t VirtualAddressSpace::cr3() const { return pageTables_.cr3(); }
 
 ElfLoadResult Elf64Loader::loadStaticExecutable(VirtualAddressSpace& as,
                                                 const std::uint8_t* data,
