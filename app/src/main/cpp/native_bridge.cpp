@@ -115,17 +115,17 @@ Java_com_hayrx_ps4emu_MainActivity_nativeRunLoadedElf(JNIEnv* env, jobject, jint
     }
     std::ostringstream output;
     output << "ELF execution stopped: " << pshere::X64Interpreter::resultName(status)
-           << "\\nInstructions this run: " << executed
-           << "\\nTotal instructions: " << gLoadedCpu->instructionsExecuted
-           << "\\nRIP: 0x" << std::hex << gLoadedCpu->rip
-           << "\\nRAX: 0x" << gLoadedCpu->registers[pshere::RAX]
-           << "\\nRSP: 0x" << gLoadedCpu->registers[pshere::RSP];
+           << "\nInstructions this run: " << executed
+           << "\nTotal instructions: " << gLoadedCpu->instructionsExecuted
+           << "\nRIP: 0x" << std::hex << gLoadedCpu->rip
+           << "\nRAX: 0x" << gLoadedCpu->registers[pshere::RAX]
+           << "\nRSP: 0x" << gLoadedCpu->registers[pshere::RSP];
     if (executed == limit && status == pshere::StepResult::Executed)
-        output << "\\nStopped at instruction budget; run again to continue.";
-    if (gLoadedCpu->halted) output << "\\nGuest executed HLT.";
+        output << "\nStopped at instruction budget; run again to continue.";
+    if (gLoadedCpu->halted) output << "\nGuest executed HLT.";
     if (status == pshere::StepResult::UnsupportedInstruction)
-        output << "\\nThis instruction is outside the current x86-64 subset.";
+        output << "\nThis instruction is outside the current x86-64 subset.";
     if (status == pshere::StepResult::MemoryFault)
-        output << "\\nGuest memory access or permission fault.";
+        output << "\nGuest memory access or permission fault.";
     return env->NewStringUTF(output.str().c_str());
 }
